@@ -8,7 +8,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
-#define MAX_PACKET_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
+#define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAUT_PORT 9000
 
 int main(int argc, char *argv[]) {
@@ -31,13 +31,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    struct sockaddr_in addr = {
+    /* sockaddr_in: IPv4 socket address struct passed to bind()
+     * .sin_family      = AF_INET     — address family: IPv4
+     * .sin_port        = htons(port) — port in network byte order (big-endian)
+     * .sin_addr.s_addr = INADDR_ANY  — listen on all available interfaces (0.0.0.0) */
+    struct sockaddr_in host = {
         .sin_family      = AF_INET,
         .sin_port        = htons(port),
         .sin_addr.s_addr = INADDR_ANY,
     };
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    /* bind() assigns the address (IP + port) to the socket
+     * (struct sockaddr *)&host — cast required: bind() takes a generic sockaddr*,
+     *   not sockaddr_in*; both have the same memory layout so the cast is safe
+     * sizeof(host) — tells the kernel how many bytes to read from the pointer
+     * < 0 — on failure: print the OS error, close the fd to avoid leaking it, exit */
+    if (bind(fd, (struct sockaddr *)&host, sizeof(host)) < 0) {
         perror("bind");
         close(fd);
         return 1;
@@ -45,27 +54,32 @@ int main(int argc, char *argv[]) {
 
     printf("Listening on UDP port %d (blocking, single-threaded)\n", port);
 
-    char buf[MAX_PACKET_SIZE];
-    struct sockaddr_in src;
-    socklen_t srclen = sizeof(src);
+    char buf[MAX_PKG_SIZE];         /* receive buffer — sized to the max UDP payload (1472 bytes) */
+    struct sockaddr_in src;         /* filled by recvfrom() with the sender's IP + port */
+    socklen_t srclen = sizeof(src); /* must be pre-set to the buffer size before recvfrom();
+                                     * recvfrom() overwrites it with the actual address length */
 
     uint64_t pkg_cnt = 0;
     while (1) {
-        ssize_t recv = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&src, &srclen);
-        if (recv < 0) {
+        /* Block until a UDP packet arrives. */
+        ssize_t recv_bytes = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&src, &srclen);
+        if (recv_bytes < 0) {
             if (errno == EINTR) continue;
             perror("recvfrom");
             break;
         }
 
-        ssize_t sent = sendto(fd, buf, recv, 0, (struct sockaddr *)&src, srclen);
-        if (sent < 0) {
+        /* Echo the exact bytes back to whoever sent them. */
+        ssize_t sent_byes = sendto(fd, buf, recv_bytes, 0, (struct sockaddr *)&src, srclen);
+        if (sent_byes < 0) {
             perror("sendto");
             break;
         }
 
         pkg_cnt++;
 
+        /* Print a status line every 10,000 packets so we can see it's alive
+         * without flooding stdout (which itself would skew benchmarks). */
         if (pkg_cnt % 10000 == 0) {
             printf("Echoed %lu packets\n", pkg_cnt);
         }
