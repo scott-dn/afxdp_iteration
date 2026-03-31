@@ -1,0 +1,12 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  -cert-err33-c,
+  -cert-err34-c
+
+WarningsAsErrors: ''
+
+CheckOptions:
+  - key: bugprone-easily-swappable-parameters.MinimumLength
+    value: 3
