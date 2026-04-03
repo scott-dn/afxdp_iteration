@@ -31,6 +31,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* enlarge the kernel receive buffer to absorb bursts before the server drains them.
+     * the kernel silently caps this at /proc/sys/net/core/rmem_max (typically 208KB by default).
+     * to allow larger values: sysctl -w net.core.rmem_max=16777216 */
+    int rcvbuf       = 4 * 1024 * 1024; /* request 4MB */
+    socklen_t optlen = sizeof(rcvbuf);
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, optlen) < 0) {
+        perror("setsockopt SO_RCVBUF");
+        return 1;
+    }
+    /* read back the actual value — kernel may have capped it at rmem_max */
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
+    printf("rcvbuf: requested 4MB, kernel gave %d bytes (%.1f KB)\n", rcvbuf, rcvbuf / 1024.0);
+
     /* sockaddr_in: IPv4 socket address struct passed to bind()
      * .sin_family      = AF_INET     — address family: IPv4
      * .sin_port        = htons(port) — port in network byte order (big-endian)
