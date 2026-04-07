@@ -34,7 +34,7 @@ int main(int argc, char *argv[]) {
     /* enlarge the kernel receive buffer to absorb bursts before the server drains them.
      * the kernel silently caps this at /proc/sys/net/core/rmem_max (typically 208KB by default).
      * to allow larger values: sysctl -w net.core.rmem_max=16777216 */
-    int rcvbuf       = 4 * 1024 * 1024; /* request 4MB */
+    int       rcvbuf = 4 * 1024 * 1024; /* request 4MB */
     socklen_t optlen = sizeof(rcvbuf);
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, optlen) < 0) {
         perror("setsockopt SO_RCVBUF");

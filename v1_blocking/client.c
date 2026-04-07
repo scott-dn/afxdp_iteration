@@ -53,10 +53,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    const char *host = argv[1];
-    int port         = atoi(argv[2]);
-    size_t count     = (argc > 3) ? atoi(argv[3]) : 10000; /* number of packets to send */
-    size_t psize     = (argc > 4) ? atoi(argv[4]) : 64;    /* payload size in bytes */
+    const char *host  = argv[1];
+    int         port  = atoi(argv[2]);
+    size_t      count = (argc > 3) ? atoi(argv[3]) : 10000; /* number of packets to send */
+    size_t      psize = (argc > 4) ? atoi(argv[4]) : 64;    /* payload size in bytes */
 
     /* clamp psize: minimum 8 bytes to fit the uint64_t timestamp header;
      * maximum 1472 bytes to stay within one Ethernet frame (MTU 1500 - IP 20 - UDP 8) */
@@ -121,9 +121,9 @@ int main(int argc, char *argv[]) {
 
     printf("Sending %zu packets of %zu bytes to %s:%d...\n", count, psize, host, port);
 
-    size_t received = 0;
-    size_t timeout  = 0;
-    uint64_t start  = now_ns();
+    size_t   received = 0;
+    size_t   timeout  = 0;
+    uint64_t start    = now_ns();
 
     for (size_t i = 0; i < count; i++) {
         uint64_t t0 = now_ns();            /* record send time before any syscall overhead */
