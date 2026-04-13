@@ -15,12 +15,12 @@ VERSIONS := $(wildcard v*/)
 
 # $(foreach d,VERSIONS,...) — loops over each version dir and collects all .c files
 # used by the fmt and lint targets
-SRCS     := $(foreach d,$(VERSIONS),$(wildcard $(d)*.c))
+SRCS     := $(foreach d,$(VERSIONS),$(wildcard $(d)*.c)) benchmark.c
 
 # same foreach loop but produces expected binary output paths, e.g.:
 #   build/v1_blocking/server  build/v1_blocking/client
 # used by the all target — make rebuilds a binary if it is missing or older than its source
-BINS     := $(foreach d,$(VERSIONS),$(BUILD)/$(d)server $(BUILD)/$(d)client)
+BINS     := $(foreach d,$(VERSIONS),$(BUILD)/$(d)server $(BUILD)/$(d)client) $(BUILD)/benchmark
 
 # --------------------------------------------------------------------------- #
 # Build                                                                        #
@@ -41,6 +41,11 @@ $(BUILD)/$(1)client: $(1)client.c
 endef
 
 $(foreach d,$(VERSIONS),$(eval $(call MAKE_RULES,$(d))))
+
+# benchmark lives at the root, links with pthreads
+$(BUILD)/benchmark: benchmark.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $< -lpthread
 
 # --------------------------------------------------------------------------- #
 # Format                                                                       #
