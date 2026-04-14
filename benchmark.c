@@ -36,20 +36,20 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "utils.h"
+
 #define PKT_HDR 16           /* packet header size: seq(8 bytes) + send_time_ns(8 bytes) */
 #define MAX_SAMPLES 10000000 /* cap latency array at 10M samples (~80MB) to bound memory usage */
 
 /* -------------------------------------------------------------------------- */
 /* Globals shared between threads                                              */
 /* -------------------------------------------------------------------------- */
-
-/* volatile: prevents the compiler from optimizing away reads of g_running
- * in the thread loops — without it, the compiler may cache the value in a
- * register and never see the main thread's g_running=0 write */
-static volatile int       g_running; /* running flag */
-static int                g_fd;      /* shared socket — sendto, recvfrom */
-static struct sockaddr_in g_server;  /* destination address */
-static size_t             g_psize;   /* packet size in bytes, immutable after thread launch */
+/* _Atomic: stronger than volatile — guarantees atomic read/write and prevents
+ * CPU reordering, not just compiler caching. correct for a flag shared between threads. */
+static _Atomic int        g_running;
+static int                g_fd;     /* shared socket — sendto, recvfrom */
+static struct sockaddr_in g_server; /* destination address */
+static size_t             g_psize;  /* packet size in bytes, immutable after thread launch */
 
 /* _Atomic: both threads increment these concurrently without a mutex;
  * C11 atomics guarantee no torn reads/writes and prevent compiler reordering */
@@ -61,31 +61,8 @@ static _Atomic size_t g_lat_n = 0; /* samples written so far; atomic — receive
 static size_t         g_lat_max;   /* capacity of g_latencies */
 
 /* -------------------------------------------------------------------------- */
-/* Helpers                                                                     */
-/* -------------------------------------------------------------------------- */
-
-static uint64_t now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-}
-
-static int cmp_u64(const void *a, const void *b) {
-    uint64_t x = *(const uint64_t *)a;
-    uint64_t y = *(const uint64_t *)b;
-    return (x > y) - (x < y);
-}
-
-static uint64_t percentile(uint64_t *sorted, size_t n, double p) {
-    size_t idx = (size_t)(p / 100.0 * n);
-    if (idx >= n) idx = n - 1;
-    return sorted[idx];
-}
-
-/* -------------------------------------------------------------------------- */
 /* Sender thread                                                               */
 /* -------------------------------------------------------------------------- */
-
 static void *sender_thread(void *arg) {
     (void)arg;
     char     buf[1472];
@@ -111,7 +88,6 @@ static void *sender_thread(void *arg) {
 /* -------------------------------------------------------------------------- */
 /* Receiver thread                                                             */
 /* -------------------------------------------------------------------------- */
-
 static void *receiver_thread(void *arg) {
     (void)arg;
     char buf[1472];
@@ -146,7 +122,6 @@ static void *receiver_thread(void *arg) {
 /* -------------------------------------------------------------------------- */
 /* Main                                                                        */
 /* -------------------------------------------------------------------------- */
-
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <host> <port> [duration_s] [size]\n", argv[0]);
