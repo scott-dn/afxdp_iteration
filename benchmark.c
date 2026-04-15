@@ -92,11 +92,15 @@ static void *receiver_thread(void *arg) {
     (void)arg;
     char buf[1472];
 
-    while (g_running) {
+    while (1) {
         ssize_t r = recvfrom(g_fd, buf, sizeof(buf), 0, NULL, NULL);
 
-        /* SO_RCVTIMEO fires as EAGAIN — just loop back to check g_running */
-        if (r < 0) continue;
+        /* SO_RCVTIMEO fires as EAGAIN — once sender has stopped and buffer
+         * is empty (timeout with no packets), exit the receiver loop */
+        if (r < 0) {
+            if (!g_running) break; /* sender done + buffer drained */
+            continue;
+        }
 
         /* packet too short to contain a valid header */
         if (r < PKT_HDR) continue;

@@ -9,10 +9,10 @@
 #include <sys/types.h>
 
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
-#define DEFAUT_PORT 9000
+#define DEFAULT_PORT 9000
 
 int main(int argc, char *argv[]) {
-    int port = (argc > 1) ? atoi(argv[1]) : DEFAUT_PORT;
+    int port = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
 
     /* SOCK_DGRAM = UDP; 0 = default protocol for this socket type */
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -28,6 +28,7 @@ int main(int argc, char *argv[]) {
     int opt = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt");
+        close(fd);
         return 1;
     }
 
@@ -38,6 +39,7 @@ int main(int argc, char *argv[]) {
     socklen_t optlen = sizeof(rcvbuf);
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, optlen) < 0) {
         perror("setsockopt SO_RCVBUF");
+        close(fd);
         return 1;
     }
     /* read back the actual value — kernel may have capped it at rmem_max */
@@ -83,17 +85,17 @@ int main(int argc, char *argv[]) {
         }
 
         /* Echo the exact bytes back to whoever sent them. */
-        ssize_t sent_byes = sendto(fd, buf, recv_bytes, 0, (struct sockaddr *)&src, srclen);
-        if (sent_byes < 0) {
+        ssize_t sent_bytes = sendto(fd, buf, recv_bytes, 0, (struct sockaddr *)&src, srclen);
+        if (sent_bytes < 0) {
             perror("sendto");
             break;
         }
 
         pkg_cnt++;
 
-        /* Print a status line every 10,000 packets so we can see it's alive
+        /* Print a status line every 20,000 packets so we can see it's alive
          * without flooding stdout (which itself would skew benchmarks). */
-        if (pkg_cnt % 10000 == 0) {
+        if (pkg_cnt % 20000 == 0) {
             printf("Echoed %lu packets\n", pkg_cnt);
         }
     }
