@@ -69,13 +69,13 @@ int main(int argc, char *argv[]) {
 
     printf("Listening on UDP port %d (blocking, single-threaded)\n", port);
 
-    char buf[MAX_PKG_SIZE];         /* receive buffer — sized to the max UDP payload (1472 bytes) */
-    struct sockaddr_in src;         /* filled by recvfrom() with the sender's IP + port */
-    socklen_t srclen = sizeof(src); /* must be pre-set to the buffer size before recvfrom();
-                                     * recvfrom() overwrites it with the actual address length */
-
+    char     buf[MAX_PKG_SIZE]; /* receive buffer — sized to the max UDP payload (1472 bytes) */
     uint64_t pkg_cnt = 0;
     while (1) {
+        struct sockaddr_in src;                  /* sender address, filled by recvfrom() */
+        socklen_t          srclen = sizeof(src); /* must be initialised each iteration;
+                                                  * recvfrom() overwrites it with the actual length */
+
         /* Block until a UDP packet arrives. */
         ssize_t recv_bytes = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&src, &srclen);
         if (recv_bytes < 0) {
