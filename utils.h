@@ -28,14 +28,22 @@ static inline int cmp_u64(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
-/* Returns the p-th percentile value from a pre-sorted array.
+/* Returns the p-th percentile value from a pre-sorted array using the nearest-rank method.
  * p is 0–100 (e.g. 99.9 for p99.9); n is the array length.
- * idx maps p to an array index: p=50 → middle, p=99.9 → near the end.
- * Clamps idx to n-1 to guard against floating point rounding pushing it out of bounds. */
+ *
+ * nearest-rank: rank = ceil(p/100 * n), clamped to [1, n]; index = rank - 1.
+ * The floor+bump avoids pulling in math.h for ceil():
+ *   if rank is an exact integer it stays as-is; if fractional it rounds up.
+ *
+ * vs. the previous floor-based formula: floor(0.99 * 100) = 99 → sorted[99] (the max!);
+ * nearest-rank gives ceil(99.0) = 99 → sorted[98], the correct p99 value. */
 static inline uint64_t percentile(uint64_t *sorted, size_t n, double p) {
-    size_t idx = (size_t)(p / 100.0 * (double)n);
-    if (idx >= n) idx = n - 1;
-    return sorted[idx];
+    double rank = p / 100.0 * (double)n;
+    size_t idx  = (size_t)rank;    /* floor */
+    if (rank > (double)idx) idx++; /* ceil: bump if not an exact integer */
+    if (idx == 0) idx = 1;         /* minimum rank is 1 */
+    if (idx > n) idx = n;          /* clamp to array length */
+    return sorted[idx - 1];        /* convert rank (1-based) to index (0-based) */
 }
 
 #endif /* UTILS_H */
