@@ -1,4 +1,3 @@
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,18 +42,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* SO_RCVTIMEO: set a receive timeout so recvfrom() doesn't block forever
-     * if the server is down or drops a packet.
-     * timeval takes seconds + microseconds separately; {2, 0} = 2 seconds.
-     * after timeout, recvfrom() returns -1 with errno=EAGAIN/EWOULDBLOCK
-     * rather than blocking indefinitely — handled in the loop below. */
-    struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("setsockopt");
-        close(fd);
-        return 1;
-    }
-
     /* Build the destination address struct for sendto().
      * sin_addr is left unset here — filled in by inet_pton() below.
      * All other fields (sin_zero padding) are zero-initialized by the designated initializer. */
@@ -92,7 +79,6 @@ int main(int argc, char *argv[]) {
     printf("Sending %zu packets of %zu bytes to %s:%d...\n", count, psize, host, port);
 
     size_t   received = 0;
-    size_t   timeout  = 0;
     uint64_t start    = now_ns();
 
     for (size_t i = 0; i < count; i++) {
@@ -111,18 +97,8 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        /* blocks here until a packet arrives or the 2s SO_RCVTIMEO fires.
-         * NULL src address — we accept responses from any sender (see bug note above).
-         * sizeof(recv_buf) = 1472, large enough for any valid echo response. */
         ssize_t r = recvfrom(fd, recv_buf, sizeof(recv_buf), 0, NULL, NULL);
         if (r < 0) {
-            /* EAGAIN/EWOULDBLOCK: the 2s timeout fired — server didn't respond.
-             * count it and move on to the next packet rather than aborting. */
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                timeout++;
-                continue;
-            }
-            /* any other error (e.g. ECONNREFUSED, ENETDOWN) is unrecoverable */
             perror("recvfrom");
             break;
         }
@@ -132,7 +108,7 @@ int main(int argc, char *argv[]) {
             t1 - t0; /* RTT in nanoseconds; received used as array index then incremented */
     }
 
-    /* total wall time covers the entire run including timeouts */
+    /* total wall time for the entire run */
     uint64_t total_ns = now_ns() - start;
 
     /* guard against all packets being lost — percentile/division below would be undefined */
@@ -155,20 +131,20 @@ int main(int argc, char *argv[]) {
     printf("\n--- Results (%s v1: blocking recvfrom) ---\n", host);
     printf("Packets sent:     %zu\n", count);
     printf("Packets received: %zu\n", received);
-    printf("Timed out:        %zu\n", timeout);
     printf("Packet size:      %zu bytes\n", psize);
-    printf("Total time:       %.3f s\n", total_ns / 1e9);
-    printf("Throughput:       %.0f pps\n", received / (total_ns / 1e9));
+    printf("Total time:       %.3f s\n", (double)total_ns / 1e9);
+    printf("Throughput:       %.0f pps\n", (double)received / ((double)total_ns / 1e9));
     printf("\nRound-trip latency (µs):\n");
-    printf("  min   : %.2f\n", latencies[0] / 1000.0); /* first element after sort */
-    printf("  p50   : %.2f\n", percentile(latencies, received, 50) / 1000.0);
-    printf("  p90   : %.2f\n", percentile(latencies, received, 90) / 1000.0);
-    printf("  p99   : %.2f\n", percentile(latencies, received, 99) / 1000.0);
-    printf("  p99.9 : %.2f\n", percentile(latencies, received, 99.9) / 1000.0);
-    printf("  max   : %.2f\n", latencies[received - 1] / 1000.0); /* last element after sort */
+    printf("  min   : %.2f\n", (double)latencies[0] / 1000.0); /* first element after sort */
+    printf("  p50   : %.2f\n", (double)percentile(latencies, received, 50) / 1000.0);
+    printf("  p90   : %.2f\n", (double)percentile(latencies, received, 90) / 1000.0);
+    printf("  p99   : %.2f\n", (double)percentile(latencies, received, 99) / 1000.0);
+    printf("  p99.9 : %.2f\n", (double)percentile(latencies, received, 99.9) / 1000.0);
+    printf("  max   : %.2f\n",
+           (double)latencies[received - 1] / 1000.0); /* last element after sort */
     printf("  avg   : %.2f\n",
-           (double)sum / received /
-               1000); /* cast to double before division to avoid integer truncation */
+           (double)sum / (double)received /
+               1000.0); /* cast to double before division to avoid integer truncation */
 
     free(latencies);
     close(fd);
