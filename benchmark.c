@@ -212,12 +212,12 @@ int main(int argc, char *argv[]) {
         sum += g_latencies[i];
 
     printf("\nRound-trip latency (µs) — %zu samples:\n", n_lat);
-    printf("  min   : %.2f\n", g_latencies[0] / 1000.0);
-    printf("  p50   : %.2f\n", percentile(g_latencies, n_lat, 50) / 1000.0);
-    printf("  p90   : %.2f\n", percentile(g_latencies, n_lat, 90) / 1000.0);
-    printf("  p99   : %.2f\n", percentile(g_latencies, n_lat, 99) / 1000.0);
-    printf("  p99.9 : %.2f\n", percentile(g_latencies, n_lat, 99.9) / 1000.0);
-    printf("  max   : %.2f\n", g_latencies[n_lat - 1] / 1000.0);
+    printf("  min   : %.2f\n", (double)g_latencies[0] / 1000.0);
+    printf("  p50   : %.2f\n", (double)percentile(g_latencies, n_lat, 50) / 1000.0);
+    printf("  p90   : %.2f\n", (double)percentile(g_latencies, n_lat, 90) / 1000.0);
+    printf("  p99   : %.2f\n", (double)percentile(g_latencies, n_lat, 99) / 1000.0);
+    printf("  p99.9 : %.2f\n", (double)percentile(g_latencies, n_lat, 99.9) / 1000.0);
+    printf("  max   : %.2f\n", (double)g_latencies[n_lat - 1] / 1000.0);
     printf("  avg   : %.2f\n", (double)sum / (double)n_lat / 1000.0);
 
     free(g_latencies);
