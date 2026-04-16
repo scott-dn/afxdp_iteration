@@ -22,6 +22,7 @@
  *   ./benchmark 127.0.0.1 9000 5 64     # 5s duration, 64 byte packets
  */
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -77,9 +78,10 @@ static void *sender_thread(void *arg) {
         memcpy(buf, &seq, 8);
         memcpy(buf + 8, &t0, 8);
 
-        sendto(g_fd, buf, g_psize, 0, (struct sockaddr *)&g_server, sizeof(g_server));
+        ssize_t s = sendto(g_fd, buf, g_psize, 0, (struct sockaddr *)&g_server, sizeof(g_server));
+        if (s > 0) atomic_fetch_add(&g_sent, 1);
+        else fprintf(stderr, "sendto failed (seq=%lu): %s\n", seq, strerror(errno));
 
-        atomic_fetch_add(&g_sent, 1);
         seq++;
     }
     return NULL;
@@ -149,6 +151,13 @@ int main(int argc, char *argv[]) {
     /* 100ms receive timeout so receiver thread exits promptly after g_running=0 */
     struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
     setsockopt(g_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* enlarge receive buffer to absorb bursts from the fire-and-forget sender;
+     * without this the kernel drops echoes before the receiver thread drains them,
+     * inflating the drop% metric with kernel-side losses rather than server losses.
+     * the kernel caps at /proc/sys/net/core/rmem_max (raise with sysctl if needed). */
+    int rcvbuf = 4 * 1024 * 1024;
+    setsockopt(g_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     g_server = (struct sockaddr_in){
         .sin_family = AF_INET,
