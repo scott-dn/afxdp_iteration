@@ -46,6 +46,7 @@
 
 #include "utils.h"
 
+#define MAX_PKG_SIZE 1472     /* mtu(1500) - ip(20) - udp(8) */
 #define PKT_HDR 16            /* packet header size: seq(8 bytes) + send_time_ns(8 bytes) */
 #define MAX_SAMPLES 100000000 /* cap latencies at 100M samples (~800MB) to bound memory usage */
 
@@ -75,10 +76,11 @@ typedef struct {
 /* -------------------------------------------------------------------------- */
 static void *sender_thread(void *arg) {
     worker_arg_t *warg = arg;
-    char          buf[1472];
-    uint64_t      seq = 0; /* seq doubles as sent count — incremented only on success */
 
-    memset(buf, 0, g_psize);
+    char     buf[MAX_PKG_SIZE];
+    uint64_t seq = 0; /* seq doubles as sent count — incremented only on success */
+
+    memset(buf, 0, g_psize); /* optional */
 
     while (g_running) {
         uint64_t t0 = now_ns();
@@ -89,7 +91,7 @@ static void *sender_thread(void *arg) {
 
         ssize_t s = sendto(warg->fd, buf, g_psize, 0, (struct sockaddr *)&g_host, sizeof(g_host));
         if (s > 0) seq++;
-        else fprintf(stderr, "sendto failed (seq=%lu): %s\n", seq, strerror(errno));
+        else fprintf(stderr, "sendto failed (seq=%llu): %s\n", (unsigned long long)seq, strerror(errno));
     }
 
     warg->sent = seq;
@@ -102,8 +104,9 @@ static void *sender_thread(void *arg) {
 /* -------------------------------------------------------------------------- */
 static void *receiver_thread(void *arg) {
     worker_arg_t *warg = arg;
-    char          buf[1472];
-    uint64_t      received = 0;
+
+    char     buf[MAX_PKG_SIZE];
+    uint64_t received = 0;
 
     while (1) {
         ssize_t r = recvfrom(warg->fd, buf, sizeof(buf), 0, NULL, NULL);
@@ -155,7 +158,7 @@ int main(int argc, char *argv[]) {
     int num_senders  = (argc > 5) ? atoi(argv[5]) : 4;
 
     if (g_psize < PKT_HDR) g_psize = PKT_HDR;
-    if (g_psize > 1472) g_psize = 1472;
+    if (g_psize > MAX_PKG_SIZE) g_psize = MAX_PKG_SIZE;
     if (num_senders < 1) num_senders = 1;
 
     g_host = (struct sockaddr_in){
@@ -241,9 +244,9 @@ int main(int argc, char *argv[]) {
     printf("Duration:         %ds\n", dur);
     printf("Senders:          %d\n", num_senders);
     printf("Packet size:      %zu bytes\n", g_psize);
-    printf("Packets sent:     %lu\n", total_sent);
-    printf("Packets received: %lu\n", total_recv);
-    printf("Dropped:          %lu (%.1f%%)\n", total_sent - total_recv, drop_pct);
+    printf("Packets sent:     %llu\n", (unsigned long long)total_sent);
+    printf("Packets received: %llu\n", (unsigned long long)total_recv);
+    printf("Dropped:          %llu (%.1f%%)\n", (unsigned long long)(total_sent - total_recv), drop_pct);
     printf("Throughput:       %.0f pps\n", (double)total_recv / dur);
 
     if (n_lat == 0) {

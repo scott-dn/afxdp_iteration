@@ -5,7 +5,7 @@
 #   -std=c11       compile as C11
 #   -D_GNU_SOURCE  expose POSIX/GNU extensions (needed for CLOCK_MONOTONIC, struct timeval, etc.)
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE
+CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -lpthread
 
 # Output directory for compiled binaries
 BUILD   := build
@@ -18,12 +18,12 @@ VERSIONS := $(wildcard v*/)
 SRCS     := $(foreach d,$(VERSIONS),$(wildcard $(d)*.c)) benchmark.c
 
 # same foreach loop but produces expected binary output paths, e.g.:
-#   build/v1_blocking/server  build/v1_blocking/client
+#   build/v1_blocking/server  build/v2_blocking_mt/server
 # used by the all target — make rebuilds a binary if it is missing or older than its source
-BINS     := $(foreach d,$(VERSIONS),$(BUILD)/$(d)server $(BUILD)/$(d)client) $(BUILD)/benchmark
+BINS     := $(foreach d,$(VERSIONS),$(BUILD)/$(d)server) $(BUILD)/benchmark
 
 # --------------------------------------------------------------------------- #
-# Build                                                                        #
+# Build                                                                       #
 # --------------------------------------------------------------------------- #
 
 .PHONY: all
@@ -34,26 +34,16 @@ define MAKE_RULES
 $(BUILD)/$(1)server: $(1)server.c
 	mkdir -p $(BUILD)/$(1)
 	$(CC) $(CFLAGS) -o $$@ $$<
-
-$(BUILD)/$(1)client: $(1)client.c
-	mkdir -p $(BUILD)/$(1)
-	$(CC) $(CFLAGS) -o $$@ $$<
 endef
 
 $(foreach d,$(VERSIONS),$(eval $(call MAKE_RULES,$(d))))
 
-# v2 server uses pthreads — override the generated rule to add -lpthread
-$(BUILD)/v2_blocking_mt/server: v2_blocking_mt/server.c
-	mkdir -p $(BUILD)/v2_blocking_mt
-	$(CC) $(CFLAGS) -o $@ $< -lpthread
-
-# benchmark lives at the root, links with pthreads
 $(BUILD)/benchmark: benchmark.c
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $< -lpthread
+	$(CC) $(CFLAGS) -o $@ $<
 
 # --------------------------------------------------------------------------- #
-# Format                                                                       #
+# Format                                                                      #
 # --------------------------------------------------------------------------- #
 
 .PHONY: fmt fmt-check
@@ -64,7 +54,7 @@ fmt-check:
 	clang-format --dry-run --Werror $(SRCS)
 
 # --------------------------------------------------------------------------- #
-# Lint                                                                         #
+# Lint                                                                        #
 # --------------------------------------------------------------------------- #
 
 .PHONY: lint
@@ -75,7 +65,7 @@ lint:
 	done
 
 # --------------------------------------------------------------------------- #
-# Clean                                                                        #
+# Clean                                                                       #
 # --------------------------------------------------------------------------- #
 
 .PHONY: clean

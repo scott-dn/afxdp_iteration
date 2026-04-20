@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) {
         /* Print a status line every 20,000 packets so we can see it's alive
          * without flooding stdout (which itself would skew benchmarks). */
         if (pkg_cnt % 20000 == 0) {
-            printf("Echoed %lu packets\n", pkg_cnt);
+            printf("Echoed %llu packets\n", (unsigned long long)pkg_cnt);
         }
     }
 

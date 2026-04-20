@@ -101,7 +101,8 @@ static void *worker_thread(void *arg) {
 
         /* Print a status line every 20,000 packets so we can see it's alive
          * without flooding stdout (which itself would skew benchmarks). */
-        if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %lu packets\n", tid, pkg_cnt);
+        if (pkg_cnt % 20000 == 0)
+            printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
     }
 
     close(fd);
