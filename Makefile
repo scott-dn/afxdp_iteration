@@ -42,6 +42,11 @@ endef
 
 $(foreach d,$(VERSIONS),$(eval $(call MAKE_RULES,$(d))))
 
+# v2 server uses pthreads — override the generated rule to add -lpthread
+$(BUILD)/v2_blocking_mt/server: v2_blocking_mt/server.c
+	mkdir -p $(BUILD)/v2_blocking_mt
+	$(CC) $(CFLAGS) -o $@ $< -lpthread
+
 # benchmark lives at the root, links with pthreads
 $(BUILD)/benchmark: benchmark.c
 	mkdir -p $(BUILD)
