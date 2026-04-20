@@ -197,8 +197,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Benchmarking %s:%d for %ds, psize=%zu bytes, senders=%d...\n", host, port, dur, g_psize,
-           num_senders);
+    printf("Benchmarking %s:%d for %ds, psize=%zu bytes, senders=%d...\n", host, port, dur, g_psize, num_senders);
 
     g_running        = 1;
     pthread_t *stids = malloc((size_t)num_senders * sizeof(pthread_t));
@@ -237,8 +236,7 @@ int main(int argc, char *argv[]) {
 
     size_t n_lat = total_recv < MAX_SAMPLES ? (size_t)total_recv : MAX_SAMPLES;
 
-    double drop_pct =
-        total_sent > 0 ? 100.0 * (double)(total_sent - total_recv) / (double)total_sent : 0.0;
+    double drop_pct = total_sent > 0 ? 100.0 * (double)(total_sent - total_recv) / (double)total_sent : 0.0;
 
     printf("\n--- Results ---\n");
     printf("Duration:         %ds\n", dur);

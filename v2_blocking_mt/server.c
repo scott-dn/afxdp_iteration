@@ -58,8 +58,7 @@ static void *worker_thread(void *arg) {
     }
     /* read back the actual value — kernel may have capped it at rmem_max */
     getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
-    printf("thread %d: rcvbuf requested 4MB, kernel gave %d bytes (%.1f KB)\n", tid, rcvbuf,
-           rcvbuf / 1024.0);
+    printf("thread %d: rcvbuf requested 4MB, kernel gave %d bytes (%.1f KB)\n", tid, rcvbuf, rcvbuf / 1024.0);
 
     struct sockaddr_in host = {
         .sin_family      = AF_INET,
@@ -101,8 +100,7 @@ static void *worker_thread(void *arg) {
 
         /* Print a status line every 20,000 packets so we can see it's alive
          * without flooding stdout (which itself would skew benchmarks). */
-        if (pkg_cnt % 20000 == 0)
-            printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
+        if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
     }
 
     close(fd);
