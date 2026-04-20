@@ -6,12 +6,14 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
+#define MAX_EVENTS 1 /* only one fd registered per epoll instance */
 
 typedef struct {
     int thread_id;
@@ -23,17 +25,14 @@ static void *worker_thread(void *arg) {
     int           port = targ->port;
     int           tid  = targ->thread_id;
 
-    /* SOCK_DGRAM = UDP; 0 = default protocol for this socket type */
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    /* SOCK_NONBLOCK: recvfrom/sendto return EAGAIN instead of blocking.
+     * Pairs with epoll_wait so the thread blocks on the epoll fd, not the socket. */
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     if (fd < 0) {
         perror("socket");
         return NULL;
     }
 
-    /* SO_REUSEADDR: allow immediate rebind after restart, avoiding "Address already in use"
-     * SO_REUSEPORT: allow multiple sockets to bind the same port — kernel distributes
-     *   incoming datagrams across them by hashing the 4-tuple (src IP, src port, dst IP, dst port).
-     *   This is the only change from v1: each thread owns a socket, kernel does the balancing. */
     int opt = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt SO_REUSEADDR");
@@ -46,9 +45,6 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
 
-    /* enlarge the kernel receive buffer to absorb bursts before the thread drains them.
-     * the kernel silently caps this at /proc/sys/net/core/rmem_max (typically 208KB by default).
-     * to allow larger values: sysctl -w net.core.rmem_max=16777216 */
     int       rcvbuf = 8 * 1024 * 1024;
     socklen_t optlen = sizeof(rcvbuf);
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, optlen) < 0) {
@@ -56,7 +52,6 @@ static void *worker_thread(void *arg) {
         close(fd);
         return NULL;
     }
-    /* read back the actual value — kernel may have capped it at rmem_max */
     getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
 
     struct sockaddr_in host = {
@@ -71,37 +66,68 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
 
-    printf("thread %d: listening on UDP port %d (blocking, multi-threaded)\n", tid, port);
-
-    char     buf[MAX_PKG_SIZE]; /* receive buffer — sized to the max UDP payload (1472 bytes) */
-    uint64_t pkg_cnt = 0;
-    while (1) {
-        struct sockaddr_in src;                  /* sender address, filled by recvfrom() */
-        socklen_t          srclen = sizeof(src); /* must be initialised each iteration;
-                                                  * recvfrom() overwrites it with the actual length */
-
-        /* Block until a UDP packet arrives. */
-        ssize_t recv_bytes = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&src, &srclen);
-        if (recv_bytes < 0) {
-            if (errno == EINTR) continue;
-            perror("recvfrom");
-            break;
-        }
-
-        /* Echo the exact bytes back to whoever sent them. */
-        ssize_t sent_bytes = sendto(fd, buf, recv_bytes, 0, (struct sockaddr *)&src, srclen);
-        if (sent_bytes < 0) {
-            perror("sendto");
-            break;
-        }
-
-        pkg_cnt++;
-
-        /* Print a status line every 20,000 packets so we can see it's alive
-         * without flooding stdout (which itself would skew benchmarks). */
-        if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
+    /* per-thread epoll instance — thread blocks on epoll_wait instead of recvfrom,
+     * so it can be extended to multiplex other fds (timers, signals, control sockets). */
+    int epfd = epoll_create1(0);
+    if (epfd < 0) {
+        perror("epoll_create1");
+        close(fd);
+        return NULL;
     }
 
+    /* level-triggered: epoll_wait returns while data is available.
+     * combined with the drain loop below, behaves like edge-triggered for throughput. */
+    struct epoll_event ev = {.events = EPOLLIN, .data.fd = fd};
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        perror("epoll_ctl");
+        close(epfd);
+        close(fd);
+        return NULL;
+    }
+
+    printf("thread %d: listening on UDP port %d (non-blocking, epoll)\n", tid, port);
+
+    char               buf[MAX_PKG_SIZE];
+    struct epoll_event events[MAX_EVENTS];
+    uint64_t           pkg_cnt = 0;
+
+    while (1) {
+        /* timeout = -1: block until at least one fd is readable */
+        int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            perror("epoll_wait");
+            break;
+        }
+
+        /* drain the socket until EAGAIN — amortizes epoll_wait over any backlog */
+        while (1) {
+            struct sockaddr_in src;
+            socklen_t          srclen = sizeof(src);
+
+            ssize_t r = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&src, &srclen);
+            if (r < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                if (errno == EINTR) continue;
+                perror("recvfrom");
+                goto done;
+            }
+
+            ssize_t s = sendto(fd, buf, r, 0, (struct sockaddr *)&src, srclen);
+            if (s < 0) {
+                /* send buffer full — drop this packet rather than queueing */
+                if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                perror("sendto");
+                goto done;
+            }
+
+            pkg_cnt++;
+            if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
+        }
+    }
+
+done:
+    close(epfd);
     close(fd);
     return NULL;
 }
