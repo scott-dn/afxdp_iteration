@@ -1,6 +1,6 @@
 services:
   server:
-    image: afxdp:latest
+    image: afxdp_iteration:latest
     build: .
     ports:
       - "9000:9000/udp"
