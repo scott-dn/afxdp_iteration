@@ -12,4 +12,4 @@ services:
       memlock: -1
     security_opt:
       - seccomp=unconfined
-    command: ./build/${VERSION:?set VERSION=v1_blocking|v2_blocking_mt|...}/server ${PORT:-9000}
+    command: ./build/${VERSION:?set VERSION=v1_blocking_st|v2_blocking_mt|...}/server ${PORT:-9000}

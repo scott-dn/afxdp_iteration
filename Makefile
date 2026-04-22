@@ -4,6 +4,7 @@
 #   -Wall -Wextra  enable most warnings
 #   -std=c11       compile as C11
 #   -D_GNU_SOURCE  expose POSIX/GNU extensions (needed for CLOCK_MONOTONIC, struct timeval, etc.)
+#   -lpthread      link libpthread — applied globally; no-op for binaries that don't use it
 CC      := gcc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -lpthread
 
@@ -13,23 +14,23 @@ BUILD   := build
 # $(wildcard v*/) — glob expands at make-time; automatically picks up v2_*, v3_*, etc.
 VERSIONS := $(wildcard v*/)
 
-# $(foreach d,VERSIONS,...) — loops over each version dir and collects all .c files
+# loops over each version dir and collects all .c files
 # used by the fmt and lint targets
 SRCS     := $(foreach d,$(VERSIONS),$(wildcard $(d)*.c)) benchmark.c
 
 # same foreach loop but produces expected binary output paths, e.g.:
-#   build/v1_blocking/server  build/v2_blocking_mt/server
+#   build/v1_blocking_st/server  build/v2_blocking_mt/server
 # used by the all target — make rebuilds a binary if it is missing or older than its source
 BINS     := $(foreach d,$(VERSIONS),$(BUILD)/$(d)server) $(BUILD)/benchmark
 
 # --------------------------------------------------------------------------- #
 # Build                                                                       #
 # --------------------------------------------------------------------------- #
-
 .PHONY: all
 all: $(BINS)
 
-# Generate explicit rules for each versioned directory
+# Generate one server build rule per versioned directory.
+# $(1) expands to the dir with trailing slash, e.g. v1_blocking_st/
 define MAKE_RULES
 $(BUILD)/$(1)server: $(1)server.c
 	mkdir -p $(BUILD)/$(1)
@@ -38,14 +39,20 @@ endef
 
 $(foreach d,$(VERSIONS),$(eval $(call MAKE_RULES,$(d))))
 
+# benchmark lives at the repo root; same CFLAGS (pthread included).
 $(BUILD)/benchmark: benchmark.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $<
 
+# Convenience alias: `make benchmark` → `make build/benchmark`.
+# Without this, Make's implicit rule (%: %.c) would compile benchmark.c
+# into ./benchmark at the repo root, leaking a stray binary outside build/.
+.PHONY: benchmark
+benchmark: $(BUILD)/benchmark
+
 # --------------------------------------------------------------------------- #
 # Format                                                                      #
 # --------------------------------------------------------------------------- #
-
 .PHONY: fmt fmt-check
 fmt:
 	clang-format -i $(SRCS)
@@ -56,7 +63,6 @@ fmt-check:
 # --------------------------------------------------------------------------- #
 # Lint                                                                        #
 # --------------------------------------------------------------------------- #
-
 .PHONY: lint
 lint:
 	@for src in $(SRCS); do \
@@ -67,7 +73,6 @@ lint:
 # --------------------------------------------------------------------------- #
 # Clean                                                                       #
 # --------------------------------------------------------------------------- #
-
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)
