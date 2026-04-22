@@ -256,8 +256,7 @@ int main(int argc, char *argv[]) {
     qsort(g_latencies, n_lat, sizeof(uint64_t), cmp_u64);
 
     uint64_t sum = 0;
-    for (size_t i = 0; i < n_lat; i++)
-        sum += g_latencies[i];
+    for (size_t i = 0; i < n_lat; i++) sum += g_latencies[i];
 
     printf("\nRound-trip latency (µs) — %zu samples:\n", n_lat);
     printf("  min   : %.2f\n", (double)g_latencies[0] / 1000.0);

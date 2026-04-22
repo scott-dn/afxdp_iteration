@@ -152,8 +152,7 @@ int main(int argc, char *argv[]) {
         pthread_create(&tids[i], NULL, worker_thread, &args[i]);
     }
 
-    for (int i = 0; i < num_threads; i++)
-        pthread_join(tids[i], NULL);
+    for (int i = 0; i < num_threads; i++) pthread_join(tids[i], NULL);
 
     free(tids);
     free(args);
