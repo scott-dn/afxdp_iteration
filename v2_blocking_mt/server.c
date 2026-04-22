@@ -13,7 +13,7 @@
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
 
-typedef struct {
+typedef struct thread_arg_t {
     int thread_id;
     int port;
 } thread_arg_t;
@@ -58,6 +58,7 @@ static void *worker_thread(void *arg) {
     }
     /* read back the actual value — kernel may have capped it at rmem_max */
     getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
+    printf("thread %d: rcvbuf requested %dMB, kernel gave %d bytes (%.1f KB)\n", tid, rcvbuf, rcvbuf, rcvbuf / 1024.0);
 
     struct sockaddr_in host = {
         .sin_family      = AF_INET,
@@ -97,9 +98,9 @@ static void *worker_thread(void *arg) {
 
         pkg_cnt++;
 
-        /* Print a status line every 20,000 packets so we can see it's alive
+        /* Print a status line every 50,000 packets so we can see it's alive
          * without flooding stdout (which itself would skew benchmarks). */
-        if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
+        if (pkg_cnt % 50000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
     }
 
     close(fd);
@@ -126,8 +127,7 @@ int main(int argc, char *argv[]) {
         pthread_create(&tids[i], NULL, worker_thread, &args[i]);
     }
 
-    for (int i = 0; i < num_threads; i++)
-        pthread_join(tids[i], NULL);
+    for (int i = 0; i < num_threads; i++) pthread_join(tids[i], NULL);
 
     free(tids);
     free(args);
