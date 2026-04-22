@@ -65,10 +65,11 @@ static _Atomic size_t g_lat_idx = 0; /* next free slot; atomic — multiple rece
 /* Per-pair argument and result struct.
  * fd is written by main before thread launch (read-only to both threads).
  * sent/received are written by each thread after exit, read by main after join — no race. */
-typedef struct {
+typedef struct worker_arg_t {
     int      fd;       /* in:  socket owned by this sender/receiver pair */
     uint64_t sent;     /* out: total packets sent, filled by sender_thread */
     uint64_t received; /* out: total echoes received, filled by receiver_thread */
+    uint64_t stalls;   /* out: mid-run recv timeouts (≥100ms idle while sender running) */
 } worker_arg_t;
 
 /* -------------------------------------------------------------------------- */
@@ -107,14 +108,18 @@ static void *receiver_thread(void *arg) {
 
     char     buf[MAX_PKG_SIZE];
     uint64_t received = 0;
+    uint64_t stalls   = 0;
 
     while (1) {
         ssize_t r = recvfrom(warg->fd, buf, sizeof(buf), 0, NULL, NULL);
 
         /* SO_RCVTIMEO fires as EAGAIN — once sender has stopped and buffer
-         * is empty (timeout with no packets), exit the receiver loop */
+         * is empty (timeout with no packets), exit the receiver loop.
+         * Timeouts that fire while sender is still running are mid-run stalls:
+         * ≥100ms idle windows that indicate server stalls or kernel drops. */
         if (r < 0) {
             if (!g_running) break; /* sender done + buffer drained */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) stalls++;
             continue;
         }
 
@@ -138,6 +143,7 @@ static void *receiver_thread(void *arg) {
     }
 
     warg->received = received;
+    warg->stalls   = stalls;
 
     return NULL;
 }
@@ -226,11 +232,13 @@ int main(int argc, char *argv[]) {
     free(stids);
     free(rtids);
 
-    uint64_t total_sent = 0;
-    uint64_t total_recv = 0;
+    uint64_t total_sent   = 0;
+    uint64_t total_recv   = 0;
+    uint64_t total_stalls = 0;
     for (int i = 0; i < num_senders; i++) {
         total_sent += workers[i].sent;
         total_recv += workers[i].received;
+        total_stalls += workers[i].stalls;
     }
     free(workers);
 
@@ -245,6 +253,7 @@ int main(int argc, char *argv[]) {
     printf("Packets sent:     %llu\n", (unsigned long long)total_sent);
     printf("Packets received: %llu\n", (unsigned long long)total_recv);
     printf("Dropped:          %llu (%.1f%%)\n", (unsigned long long)(total_sent - total_recv), drop_pct);
+    printf("Mid-run stalls:   %llu (≥100ms idle windows)\n", (unsigned long long)total_stalls);
     printf("Throughput:       %.0f pps\n", (double)total_recv / dur);
 
     if (n_lat == 0) {

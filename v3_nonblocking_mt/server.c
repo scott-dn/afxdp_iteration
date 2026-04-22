@@ -15,7 +15,7 @@
 #define DEFAULT_THREADS 8
 #define MAX_EVENTS 1 /* only one fd registered per epoll instance */
 
-typedef struct {
+typedef struct thread_arg_t {
     int thread_id;
     int port;
 } thread_arg_t;
@@ -59,7 +59,6 @@ static void *worker_thread(void *arg) {
         .sin_port        = htons(port),
         .sin_addr.s_addr = INADDR_ANY,
     };
-
     if (bind(fd, (struct sockaddr *)&host, sizeof(host)) < 0) {
         perror("bind");
         close(fd);

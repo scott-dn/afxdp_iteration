@@ -57,15 +57,15 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
     /* read back the actual value — kernel may have capped it at rmem_max */
-    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
-    printf("thread %d: rcvbuf requested %dMB, kernel gave %d bytes (%.1f KB)\n", tid, rcvbuf, rcvbuf, rcvbuf / 1024.0);
+    int actual_rcvbuf;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual_rcvbuf, &optlen);
+    printf("thread %d: rcvbuf requested %d bytes, kernel gave %d bytes\n", tid, rcvbuf, actual_rcvbuf);
 
     struct sockaddr_in host = {
         .sin_family      = AF_INET,
         .sin_port        = htons(port),
         .sin_addr.s_addr = INADDR_ANY,
     };
-
     if (bind(fd, (struct sockaddr *)&host, sizeof(host)) < 0) {
         perror("bind");
         close(fd);

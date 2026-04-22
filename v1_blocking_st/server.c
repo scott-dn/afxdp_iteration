@@ -55,7 +55,6 @@ int main(int argc, char *argv[]) {
         .sin_port        = htons(port),
         .sin_addr.s_addr = INADDR_ANY,
     };
-
     /* bind() assigns the address (IP + port) to the socket
      * (struct sockaddr *)&host — cast required: bind() takes a generic sockaddr*,
      *   not sockaddr_in*; both have the same memory layout so the cast is safe
