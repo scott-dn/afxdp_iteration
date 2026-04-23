@@ -14,14 +14,14 @@
 #define DEFAULT_THREADS 8
 
 typedef struct thread_arg_t {
-    int thread_id;
+    int tid;
     int port;
 } thread_arg_t;
 
 static void *worker_thread(void *arg) {
     thread_arg_t *targ = (thread_arg_t *)arg;
     int           port = targ->port;
-    int           tid  = targ->thread_id;
+    int           tid  = targ->tid;
 
     /* SOCK_DGRAM = UDP; 0 = default protocol for this socket type */
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -111,25 +111,22 @@ int main(int argc, char *argv[]) {
     int port        = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
     int num_threads = (argc > 2) ? atoi(argv[2]) : DEFAULT_THREADS;
 
-    printf("Starting %d worker threads on port %d\n", num_threads, port);
-
-    pthread_t    *tids = malloc((size_t)num_threads * sizeof(pthread_t));
-    thread_arg_t *args = malloc((size_t)num_threads * sizeof(thread_arg_t));
-    if (!tids || !args) {
-        perror("malloc");
-        free(tids);
-        free(args);
+    if (num_threads < 1 || num_threads > 256) {
+        fprintf(stderr, "num_threads must be 1..256\n");
         return 1;
     }
 
+    printf("Starting %d worker threads on port %d\n", num_threads, port);
+
+    pthread_t    tids[num_threads];
+    thread_arg_t args[num_threads];
+
     for (int i = 0; i < num_threads; i++) {
-        args[i] = (thread_arg_t){.thread_id = i, .port = port};
+        args[i] = (thread_arg_t){.tid = i, .port = port};
         pthread_create(&tids[i], NULL, worker_thread, &args[i]);
     }
 
     for (int i = 0; i < num_threads; i++) pthread_join(tids[i], NULL);
 
-    free(tids);
-    free(args);
     return 0;
 }

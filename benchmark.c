@@ -165,7 +165,10 @@ int main(int argc, char *argv[]) {
 
     if (g_psize < PKT_HDR) g_psize = PKT_HDR;
     if (g_psize > MAX_PKG_SIZE) g_psize = MAX_PKG_SIZE;
-    if (num_senders < 1) num_senders = 1;
+    if (num_senders < 1 || num_senders > 256) {
+        fprintf(stderr, "num_senders must be 1..256\n");
+        return 1;
+    }
 
     g_host = (struct sockaddr_in){
         .sin_family = AF_INET,
@@ -178,18 +181,13 @@ int main(int argc, char *argv[]) {
 
     /* one socket per sender — distinct ephemeral src port each, so SO_REUSEPORT on the
      * server distributes packets across server threads by 4-tuple hash */
-    worker_arg_t *workers = malloc((size_t)num_senders * sizeof(worker_arg_t));
-    if (!workers) {
-        perror("malloc");
-        return 1;
-    }
+    worker_arg_t   workers[num_senders];
     struct timeval tv     = {.tv_sec = 0, .tv_usec = 100000}; /* 100ms recv timeout */
     int            rcvbuf = 4 * 1024 * 1024;
     for (int i = 0; i < num_senders; i++) {
         workers[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (workers[i].fd < 0) {
             perror("socket");
-            free(workers);
             return 1;
         }
         setsockopt(workers[i].fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -199,23 +197,14 @@ int main(int argc, char *argv[]) {
     g_latencies = malloc(MAX_SAMPLES * sizeof(uint64_t));
     if (!g_latencies) {
         perror("malloc");
-        free(workers);
         return 1;
     }
 
     printf("Benchmarking %s:%d for %ds, psize=%zu bytes, senders=%d...\n", host, port, dur, g_psize, num_senders);
 
-    g_running        = 1;
-    pthread_t *stids = malloc((size_t)num_senders * sizeof(pthread_t));
-    pthread_t *rtids = malloc((size_t)num_senders * sizeof(pthread_t));
-    if (!stids || !rtids) {
-        perror("malloc");
-        free(stids);
-        free(rtids);
-        free(g_latencies);
-        free(workers);
-        return 1;
-    }
+    g_running = 1;
+    pthread_t stids[num_senders];
+    pthread_t rtids[num_senders];
     for (int i = 0; i < num_senders; i++) {
         pthread_create(&rtids[i], NULL, receiver_thread, &workers[i]);
         pthread_create(&stids[i], NULL, sender_thread, &workers[i]);
@@ -229,8 +218,6 @@ int main(int argc, char *argv[]) {
         pthread_join(rtids[i], NULL);
         close(workers[i].fd);
     }
-    free(stids);
-    free(rtids);
 
     uint64_t total_sent   = 0;
     uint64_t total_recv   = 0;
@@ -240,7 +227,6 @@ int main(int argc, char *argv[]) {
         total_recv += workers[i].received;
         total_stalls += workers[i].stalls;
     }
-    free(workers);
 
     size_t n_lat = total_recv < MAX_SAMPLES ? (size_t)total_recv : MAX_SAMPLES;
 

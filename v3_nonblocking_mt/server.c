@@ -16,14 +16,14 @@
 #define MAX_EVENTS 1 /* only one fd registered per epoll instance */
 
 typedef struct thread_arg_t {
-    int thread_id;
+    int tid;
     int port;
 } thread_arg_t;
 
 static void *worker_thread(void *arg) {
     thread_arg_t *targ = (thread_arg_t *)arg;
     int           port = targ->port;
-    int           tid  = targ->thread_id;
+    int           tid  = targ->tid;
 
     /* SOCK_NONBLOCK: recvfrom/sendto return EAGAIN instead of blocking.
      * Pairs with epoll_wait so the thread blocks on the epoll fd, not the socket. */
@@ -121,7 +121,7 @@ static void *worker_thread(void *arg) {
             }
 
             pkg_cnt++;
-            if (pkg_cnt % 20000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
+            if (pkg_cnt % 50000 == 0) printf("thread %d: echoed %llu packets\n", tid, (unsigned long long)pkg_cnt);
         }
     }
 
@@ -135,25 +135,22 @@ int main(int argc, char *argv[]) {
     int port        = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
     int num_threads = (argc > 2) ? atoi(argv[2]) : DEFAULT_THREADS;
 
-    printf("Starting %d worker threads on port %d\n", num_threads, port);
-
-    pthread_t    *tids = malloc((size_t)num_threads * sizeof(pthread_t));
-    thread_arg_t *args = malloc((size_t)num_threads * sizeof(thread_arg_t));
-    if (!tids || !args) {
-        perror("malloc");
-        free(tids);
-        free(args);
+    if (num_threads < 1 || num_threads > 256) {
+        fprintf(stderr, "num_threads must be 1..256\n");
         return 1;
     }
 
+    printf("Starting %d worker threads on port %d\n", num_threads, port);
+
+    pthread_t    tids[num_threads];
+    thread_arg_t args[num_threads];
+
     for (int i = 0; i < num_threads; i++) {
-        args[i] = (thread_arg_t){.thread_id = i, .port = port};
+        args[i] = (thread_arg_t){.tid = i, .port = port};
         pthread_create(&tids[i], NULL, worker_thread, &args[i]);
     }
 
     for (int i = 0; i < num_threads; i++) pthread_join(tids[i], NULL);
 
-    free(tids);
-    free(args);
     return 0;
 }
