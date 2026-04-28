@@ -52,7 +52,6 @@ static void *worker_thread(void *arg) {
         close(fd);
         return NULL;
     }
-    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
 
     struct sockaddr_in host = {
         .sin_family      = AF_INET,

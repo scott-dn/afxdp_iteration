@@ -42,9 +42,6 @@ int main(int argc, char *argv[]) {
         close(fd);
         return 1;
     }
-    /* read back the actual value — kernel may have capped it at rmem_max */
-    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen);
-    printf("rcvbuf: requested 4MB, kernel gave %d bytes (%.1f KB)\n", rcvbuf, rcvbuf / 1024.0);
 
     /* sockaddr_in: IPv4 socket address struct passed to bind()
      * .sin_family      = AF_INET     — address family: IPv4
