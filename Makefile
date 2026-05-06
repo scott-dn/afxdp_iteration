@@ -4,9 +4,14 @@
 #   -Wall -Wextra  enable most warnings
 #   -std=c11       compile as C11
 #   -D_GNU_SOURCE  expose POSIX/GNU extensions (needed for CLOCK_MONOTONIC, struct timeval, etc.)
-#   -lpthread      link libpthread — applied globally; no-op for binaries that don't use it
+# LDLIBS is appended after the source file in the link command — required because
+# the linker only pulls in symbols from a library to satisfy *already-seen* undefined
+# references. -l flags placed before the .c file (e.g. in CFLAGS) get discarded.
+#   -lpthread      libpthread — no-op for binaries that don't use it
+#   -luring        liburing for v5; --as-needed drops it from v1–v4 binaries
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -lpthread
+CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE
+LDLIBS  := -lpthread -luring
 
 # Output directory for compiled binaries
 BUILD   := build
@@ -34,15 +39,15 @@ all: $(BINS)
 define MAKE_RULES
 $(BUILD)/$(1)server: $(1)server.c
 	mkdir -p $(BUILD)/$(1)
-	$(CC) $(CFLAGS) -o $$@ $$<
+	$(CC) $(CFLAGS) -o $$@ $$< $(LDLIBS)
 endef
 
 $(foreach d,$(VERSIONS),$(eval $(call MAKE_RULES,$(d))))
 
-# benchmark lives at the repo root; same CFLAGS (pthread included).
+# benchmark lives at the repo root; same CFLAGS + LDLIBS as the servers.
 $(BUILD)/benchmark: benchmark.c
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
 # Convenience alias: `make benchmark` → `make build/benchmark`.
 # Without this, Make's implicit rule (%: %.c) would compile benchmark.c
