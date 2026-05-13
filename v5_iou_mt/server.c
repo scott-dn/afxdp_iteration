@@ -128,9 +128,9 @@ static void *worker_thread(void *arg) {
      * per ring; the value is zero-syscall hot path. */
     struct io_uring        ring;
     struct io_uring_params params = {0};
-    params.flags                   = IORING_SETUP_SQPOLL;
-    params.sq_thread_idle          = SQPOLL_IDLE_MS;
-    int rc = io_uring_queue_init_params(RING_ENTRIES, &ring, &params);
+    params.flags                  = IORING_SETUP_SQPOLL;
+    params.sq_thread_idle         = SQPOLL_IDLE_MS;
+    int rc                        = io_uring_queue_init_params(RING_ENTRIES, &ring, &params);
     if (rc < 0) {
         /* liburing returns negative errno directly — not the -1+errno convention. */
         fprintf(stderr, "thread %d: io_uring_queue_init_params: %s\n", tid, strerror(-rc));
@@ -153,9 +153,8 @@ static void *worker_thread(void *arg) {
     /* Buffer ring (provided buffers, IORING_REGISTER_PBUF_RING). io_uring_setup_buf_ring
      * allocates+registers in one call. The kernel pulls a free buf from this ring for
      * each multishot recv; we push freed bids back after their send completes. */
-    int                       br_ret = 0;
-    struct io_uring_buf_ring *buf_ring =
-        io_uring_setup_buf_ring(&ring, BUF_RING_ENTRIES, BUF_GROUP, 0, &br_ret);
+    int                       br_ret   = 0;
+    struct io_uring_buf_ring *buf_ring = io_uring_setup_buf_ring(&ring, BUF_RING_ENTRIES, BUF_GROUP, 0, &br_ret);
     if (!buf_ring) {
         fprintf(stderr, "io_uring_setup_buf_ring: %s\n", strerror(-br_ret));
         munmap(buf_base, (size_t)BUF_RING_ENTRIES * BUF_BYTES);
@@ -183,8 +182,8 @@ static void *worker_thread(void *arg) {
     /* Template for the multishot recvmsg. The kernel reads namelen/controllen out of
      * this to know how much of the buffer to reserve for name/ctrl; the rest is payload.
      * msg_iov is unused for multishot recv — the buffer is supplied via the buf_ring. */
-    struct msghdr recv_proto = {0};
-    recv_proto.msg_namelen   = sizeof(struct sockaddr_in);
+    struct msghdr recv_proto  = {0};
+    recv_proto.msg_namelen    = sizeof(struct sockaddr_in);
     recv_proto.msg_controllen = 0;
 
     if (arm_multishot_recv(&ring, fd, &recv_proto) < 0) {
@@ -249,10 +248,10 @@ static void *worker_thread(void *arg) {
                             send_iovs[bid].iov_base = payload;
                             send_iovs[bid].iov_len  = paylen;
                             send_msgs[bid]          = (struct msghdr){
-                                         .msg_name    = name,
-                                         .msg_namelen = sizeof(struct sockaddr_in),
-                                         .msg_iov     = &send_iovs[bid],
-                                         .msg_iovlen  = 1,
+                                .msg_name    = name,
+                                .msg_namelen = sizeof(struct sockaddr_in),
+                                .msg_iov     = &send_iovs[bid],
+                                .msg_iovlen  = 1,
                             };
 
                             struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
