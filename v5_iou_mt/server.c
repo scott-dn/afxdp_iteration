@@ -123,19 +123,42 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
 
-    /* Ring setup. SQPOLL puts a kernel thread on the SQ — userspace writes SQEs and the
-     * kernel picks them up without io_uring_enter syscalls. The cost is a kernel thread
-     * per ring; the value is zero-syscall hot path. */
+    /* io_uring init. The params struct is bidirectional:
+     *   in  → flags, sq_thread_idle, sq_thread_cpu (we set), ...
+     *   out ← sq_entries, cq_entries, features, *_off (kernel fills on return)
+     * Zero-init is required: reserved fields must be 0 or the kernel rejects the call. */
     struct io_uring        ring;
     struct io_uring_params params = {0};
-    params.flags                  = IORING_SETUP_SQPOLL;
-    params.sq_thread_idle         = SQPOLL_IDLE_MS;
-    int rc                        = io_uring_queue_init_params(RING_ENTRIES, &ring, &params);
+
+    /* IORING_SETUP_SQPOLL: spawn a dedicated kernel thread that polls the SQ tail.
+     * While that thread is awake, userspace submits SQEs with just a memory write —
+     * no io_uring_enter syscall on the hot path. The cost is one kthread per ring. */
+    params.flags = IORING_SETUP_SQPOLL;
+
+    /* Idle window (ms) the SQPOLL thread spins after the last submission before
+     * parking. While parked, the next submit costs one io_uring_enter to wake it. */
+    params.sq_thread_idle = SQPOLL_IDLE_MS;
+
+    /* RING_ENTRIES is a *request*: the kernel rounds up to a power of two and may
+     * clamp by IORING_MAX_ENTRIES. The actual sizes land in params.sq_entries
+     * and params.cq_entries (CQ defaults to 2× SQ). */
+    int rc = io_uring_queue_init_params(RING_ENTRIES, &ring, &params);
     if (rc < 0) {
         /* liburing returns negative errno directly — not the -1+errno convention. */
         fprintf(stderr, "thread %d: io_uring_queue_init_params: %s\n", tid, strerror(-rc));
         close(fd);
         return NULL;
+    }
+
+    /* One-time inspection: print what the kernel actually gave us back. Useful for
+     * confirming SQPOLL is supported on this kernel, the ring sizes after rounding,
+     * and which feature flags this kernel exposes. Only thread 0 prints. */
+    if (tid == 0) {
+        printf("io_uring: liburing %d.%d  sq=%u  cq=%u  features=0x%x%s%s%s\n", io_uring_major_version(),
+               io_uring_minor_version(), params.sq_entries, params.cq_entries, params.features,
+               (params.features & IORING_FEAT_SINGLE_MMAP) ? " SINGLE_MMAP" : "",
+               (params.features & IORING_FEAT_NODROP) ? " NODROP" : "",
+               (params.features & IORING_FEAT_FAST_POLL) ? " FAST_POLL" : "");
     }
 
     /* Backing memory for the BUF_RING_ENTRIES recv buffers. Page-aligned via mmap so
@@ -301,6 +324,11 @@ cleanup:
 }
 
 int main(int argc, char *argv[]) {
+    /* Line-buffer stdout so prints reach docker logs / pipes immediately. By default
+     * stdout block-buffers when it isn't a TTY, which hides startup + milestone lines
+     * until the buffer fills (often: never, on a steady-state server). */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     int port        = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
     int num_threads = (argc > 2) ? atoi(argv[2]) : DEFAULT_THREADS;
 
