@@ -2,14 +2,49 @@ services:
   server:
     image: afxdp_iteration:latest
     build: .
+    # Restrict server to logical CPUs 0-7 = physical cores P0-P3 (both SMT siblings each).
+    # Combined with per-thread pthread_setaffinity_np in the server code, this keeps server
+    # workers physically disjoint from the bench (cpuset 8-15 = P4-P7), eliminating
+    # bench-vs-server cache/scheduler contention as a variance source.
+    cpuset: "${SERVER_CPUSET:-0-7}"
     ports:
       - "9000:9000/udp"
+    # Linux capabilities granted to the container (drops everything else by default).
+    # Needed by v5/v6 only; v1-v4 don't use them but the same image runs all versions.
+    #   NET_ADMIN — change net.core.rmem_max sysctl, manage XDP programs, ip link xdp ...
+    #   SYS_ADMIN — required by io_uring's IORING_SETUP_SQPOLL on some kernels (perf event paranoid)
+    #               and to mlock() large rings without a per-process limit.
+    #   IPC_LOCK  — allow mlock() of UMEM pages (v6/AF_XDP) without RLIMIT_MEMLOCK truncation.
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
       - IPC_LOCK
+    # Lift the locked-memory cap to unlimited. io_uring rings (v5) and AF_XDP UMEM (v6)
+    # both mlock significant memory; the default RLIMIT_MEMLOCK (64 KiB on most distros)
+    # would cause io_uring_setup / xsk_umem__create to fail with ENOMEM.
     ulimits:
       memlock: -1
+    # Disable docker's default seccomp filter. Two reasons:
+    #   1. io_uring syscalls (io_uring_setup/enter/register) aren't on the default allowlist
+    #      in older docker versions, and we want to be robust across hosts.
+    #   2. Removes per-syscall seccomp BPF dispatch overhead from the hot path. Small effect
+    #      (tens of ns per syscall) but real when you're counting microseconds.
     security_opt:
       - seccomp=unconfined
-    command: ./build/${VERSION:?set VERSION=v1_blocking_st|v2_blocking_mt|...}/server ${PORT:-9000}
+    command: ./build/${VERSION:?set VERSION=v1_blocking_st|v2_blocking_mt|...}/server ${PORT:-9000} ${THREADS:-}
+
+  bench:
+    image: afxdp_iteration:latest
+    # Gated behind a profile so `docker compose up` only starts the server.
+    # Invoke ad-hoc via: `docker compose run --rm bench ./build/benchmark ...`
+    profiles: ["bench"]
+    # Physical-core-disjoint from server (which is pinned to logical 0-7 =
+    # cores P0-P3). Bench gets logical 8-15 = cores P4-P7, so sender TX
+    # never shares a physical core (or its SMT sibling) with server RX.
+    cpuset: "${BENCH_CPUSET:-8-15}"
+    # Share the server's network namespace so 127.0.0.1:9000 reaches the
+    # server's loopback directly — same path as the old `docker exec` flow,
+    # but in a separate cgroup so cpuset above actually applies.
+    network_mode: "service:server"
+    depends_on:
+      - server
