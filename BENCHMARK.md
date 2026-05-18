@@ -164,12 +164,12 @@ port, only `src_port` varies — and `src_port` is the **ephemeral port** the
 kernel picked when the bench's socket was created.
 
 ```
-                            one socket per src_port
-                            ────────────────────────
+                          one socket per src_port
+                          ─────────────────────────────────────────
 
-                         src_port=52001       src_port=52002       ...
-                              │                    │
-                              ▼                    ▼
+                          src_port=52001     src_port=52002     ...
+                             │                  │
+                             ▼                  ▼
                           ┌───────────────────────────────────────┐
                           │  hash(src_port, ...) % num_workers    │
                           └──┬────┬────┬────┬────┬────┬────┬────┬─┘
@@ -192,7 +192,7 @@ every worker gets roughly fair load:
                   ▼
    ┌────────────────────────────────────────────────────────┐
    │ hash() % 8                                             │
-   └─┬───┬───┬───┬───┬───┬───┬───┬─────────────────────────┘
+   └─┬───┬───┬───┬───┬───┬───┬───┬──────────────────────────┘
      │   │   │   │   │   │   │   │
      2   2   2   2   2   2   2   2     ← every worker gets ~2 flows
      w0  w1  w2  w3  w4  w5  w6  w7
@@ -217,10 +217,10 @@ receivers:
    ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
    │ fd0  │ fd1  │ fd2  │ fd3  │ fd4  │ fd5  │ fd6  │ fd7  │ fd8  │ fd9  │ ...
    └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
-     │      │      │      │      │      │      │      │      │      │
-     │  sender 0's slice (K=4)   │  sender 1's slice         │  sender 2's │
-     │     ──────────────────    │   ────────────────        │  ─────────  │
-     ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+   │      │      │      │      │      │      │      │      │      │      │      │
+   │   sender 0's slice (K=4)  │     sender 1's slice      │     sender 2's     │
+   │   ─────────────────────   │  ───────────────────────  │  ────────────────  │
+   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
    senders[0].fds = &all_fds[0]   ── sender 0 rotates across [fd0..fd3]
                                   senders[1].fds = &all_fds[K]
                                   senders[2].fds = &all_fds[2K]
@@ -312,18 +312,18 @@ Three things to notice:
    N*K receiver threads, each computing RTTs concurrently
    ─────────────────────────────────────────────────────────
 
-        receiver 0          receiver 1          receiver 2          ...
-            │                   │                   │
-            │ atomic_fetch_add  │ atomic_fetch_add  │
-            ▼                   ▼                   ▼
-        idx=0               idx=1               idx=2
-            │                   │                   │
-            ▼                   ▼                   ▼
+   receiver 0          receiver 1          receiver 2          ...
+      │                   │                   │
+      │ atomic_fetch_add  │ atomic_fetch_add  │
+      ▼                   ▼                   ▼
+   idx=0               idx=1               idx=2
+      │      ┌────────────┘                   │
+      │      │      ┌─────────────────────────┘
+      ▼      ▼      ▼
    ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬─ ... ─┬──────┐
    │  l0  │  l1  │  l2  │  l3  │  l4  │  l5  │  l6  │       │  ?   │  g_latencies[]
    └──────┴──────┴──────┴──────┴──────┴──────┴──────┴─ ... ─┴──────┘
-   ◄────── claimed slots ─────►◄──────── unused ────────►
-                                                       MAX_SAMPLES (100M)
+   ◄── claimed slots ──►◄────────── unused ──────────►  MAX_SAMPLES (100M)
 
    end of run:
        n_lat = min(total_recv, MAX_SAMPLES)
@@ -367,11 +367,11 @@ The helper (in `utils.h`) does three things:
 3. Calls `pthread_setaffinity_np` to clamp this thread to that one CPU.
 
 ```
-   sched_getaffinity → mask = {8, 9, 10, 11, 12, 13, 14, 15}
-                              ▲   ▲   ▲   ▲   ▲   ▲   ▲   ▲
-   pin_to_nth_allowed_cpu(0, 0) ─┘  │  │  │  │  │  │  │
-   pin_to_nth_allowed_cpu(1, 1) ────┘  │  │  │  │  │  │
-   pin_to_nth_allowed_cpu(2, 2) ───────┘  │  │  │  │  │
+   sched_getaffinity → mask  =  {8, 9, 10, 11, 12, 13, 14, 15}
+                                 ▲  ▲  ▲   ▲   ▲   ▲   ▲   ▲
+   pin_to_nth_allowed_cpu(0, 0) ─┘  │  │   │   │   │   │   │
+   pin_to_nth_allowed_cpu(1, 1) ────┘  │   │   │   │   │   │
+   pin_to_nth_allowed_cpu(2, 2) ───────┘   │   │   │   │   │
    ...
 ```
 
