@@ -1,6 +1,8 @@
 # v5 — `iou_mt` walkthrough
 
-UDP echo server that replaces v4's `epoll` + `recvmmsg`/`sendmmsg` with a per-thread `io_uring` ring using **`SQPOLL`** (kernel-side submission poller), **multishot `recvmsg`** (one SQE produces many recv completions), and **provided buffer rings** (kernel pulls recv buffers from a pool the app registers). Net effect on the hot path: zero syscalls, zero per-packet SQE bookkeeping for recv.
+UDP echo server that replaces v4's `epoll` + `recvmmsg`/`sendmmsg` with a per-thread `io_uring` ring using **multishot `recvmsg`** (one SQE produces many recv completions) and **provided buffer rings** (kernel pulls recv buffers from a pool the app registers). The hot path does one `io_uring_enter` per CQ-drain cycle and zero per-packet SQE bookkeeping for recv.
+
+> **Note on `SQPOLL`:** the kernel-side submission poller was tried (`IORING_SETUP_SQPOLL`) and found to be a net loss on this workload — see `RESULT.MD`. Lower latency at single-flight, no measurable throughput penalty at high pps, fewer moving parts. Section 9 below contrasts the two modes.
 
 ## Requirements
 
@@ -234,36 +236,65 @@ Each `bid` is in exactly one of these states:
 
 Drop paths (validate failure, SQ full, send error) collapse "send pending" → "recyclable" immediately — same destination, just no kernel work in between.
 
-## 9. SQPOLL — what changes vs v4
+## 9. Syscalls — what changes vs v4
 
 ```
 v4 hot loop:
   while (1) {
       epoll_wait()      ── syscall
       while drain:
-          recvmmsg(64)  ── syscall
+          recvmmsg(64)  ── syscall (one per batch of N packets)
           patch iov_len
-          sendmmsg(64)  ── syscall
+          sendmmsg(64)  ── syscall (one per batch of N packets)
   }
-  → 3 syscalls per 64 packets
+  → 3 syscalls per drain cycle (one drain per ~64 packets)
 
 
-v5 hot loop:
+v5 hot loop (no SQPOLL, what we ship):
   while (1) {
-      wait_cqe()                    ── only enters kernel when CQ is empty
+      wait_cqe()                    ── io_uring_enter only when CQ is empty
       for each cqe:
           if recv: build send msghdr
                    push SQE         (memory write — no syscall)
           else:    recycle bid
       cq_advance()
-      submit()                      ── memory write; wakes parked SQPOLL
-  }                                    kthread only when it had parked
-  → 0 syscalls per 64 packets while SQPOLL is hot
+      submit()                      ── io_uring_enter once, kernel runs SQEs
+  }
+  → 1 syscall per drain cycle (one drain per hundreds of packets)
 ```
 
-The SQPOLL kthread spins on the SQ tail for `sq_thread_idle` ms (we set 2000) after the last activity. While it's spinning, every `submit()` is just a memory write — no `io_uring_enter` syscall. If it parks, the next `submit()` does cost one syscall to wake it.
+That's ~3× fewer syscalls per drain cycle than v4, and the multishot recv
+means there's no per-packet SQE bookkeeping. Submit cost is one
+`io_uring_enter` amortized across everything we did this cycle, which is
+invisible in the profile.
 
-The bet: under load, SQPOLL stays hot, and the syscall count on the hot path drops to zero. The cost is a kernel thread per ring, which is why this would be wasteful at low pps.
+### Why not SQPOLL?
+
+`IORING_SETUP_SQPOLL` would push the syscall count to zero — the kernel
+poller thread services submits directly without `io_uring_enter`. But:
+
+- It adds 25 µs–2 ms to single-flight latency. The poller spins on the SQ
+  tail and only services submits on its next round; with one in-flight
+  packet, that delay dominates the round trip.
+- It burns one full CPU per ring while spinning. At T=8 that's 8 cores
+  worth of polling competing with worker threads on the same cpuset.
+- It cold-starts on burst boundaries: after `sq_thread_idle` ms of
+  inactivity, the kthread parks; the next submit costs one syscall to
+  wake it.
+
+For this UDP echo workload, the drain-the-CQ loop already amortizes
+submits across many CQEs, so the one `io_uring_enter` per cycle is cheap.
+SQPOLL would save it but cost much more in latency. See `RESULT.MD` for
+the measured tradeoff (892k pps at 0% drop without SQPOLL, ~847k pps at
+0% drop with SQPOLL, but latency floor 7 µs vs 547 µs).
+
+SQPOLL would pay off when:
+- Submits cannot batch (one syscall per packet would actually fire).
+- Single-flight latency doesn't matter (sustained one-way streaming).
+- A dedicated CPU can be reserved for the poller via
+  `SQ_AFF + sq_thread_cpu`.
+
+None of those are true here, so SQPOLL stays off in v5.
 
 ## 10. Why the syscall delta isn't the whole story
 

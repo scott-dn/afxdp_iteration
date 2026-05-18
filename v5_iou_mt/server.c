@@ -13,6 +13,8 @@
 
 #include <liburing.h>
 
+#include "../utils.h"
+
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
@@ -85,6 +87,9 @@ static void *worker_thread(void *arg) {
     int           port = targ->port;
     int           tid  = targ->tid;
 
+    /* Pin to one CPU within the current affinity mask — see v2 for rationale. */
+    pin_to_nth_allowed_cpu(tid, tid);
+
     /* Identical socket setup to v3/v4 — only the I/O engine changes in v5. */
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     if (fd < 0) {
@@ -130,14 +135,17 @@ static void *worker_thread(void *arg) {
     struct io_uring        ring;
     struct io_uring_params params = {0};
 
-    /* IORING_SETUP_SQPOLL: spawn a dedicated kernel thread that polls the SQ tail.
-     * While that thread is awake, userspace submits SQEs with just a memory write —
-     * no io_uring_enter syscall on the hot path. The cost is one kthread per ring. */
-    params.flags = IORING_SETUP_SQPOLL;
-
-    /* Idle window (ms) the SQPOLL thread spins after the last submission before
-     * parking. While parked, the next submit costs one io_uring_enter to wake it. */
-    params.sq_thread_idle = SQPOLL_IDLE_MS;
+    /* SQPOLL intentionally NOT enabled here. Tradeoff is workload-dependent:
+     *   - SQPOLL on:  zero-syscall submits while the kthread is hot; great for
+     *                 sustained high pps, but adds ~25 µs to single-flight
+     *                 latency because submits compete with the poller's spin,
+     *                 and a cold poller costs one io_uring_enter to wake.
+     *   - SQPOLL off: one io_uring_enter per CQ-drain cycle (cheap — amortized
+     *                 across the batch of CQEs we drain in one wait_cqe).
+     *                 Latency floor matches v4/v3; throughput cost is small
+     *                 (one syscall per ~hundreds of packets in the batch).
+     * v5's distinctive wins (multishot recv, provided buffer ring, no per-packet
+     * SQE bookkeeping) remain regardless of SQPOLL. See RESULT.MD for the data. */
 
     /* RING_ENTRIES is a *request*: the kernel rounds up to a power of two and may
      * clamp by IORING_MAX_ENTRIES. The actual sizes land in params.sq_entries
