@@ -10,12 +10,12 @@ N×K socket fanout, per-thread CPU pinning) exists to make the measurement
 ## Run
 
 ```sh
-# 1. Start a server in one shell (compose handles cpuset + caps + seccomp)
-VERSION=v5_iou_mt docker compose up -d --build --wait
+# Build once (any VERSION works — the image is shared across versions)
+VERSION=v5_iou_mt docker compose build
 
-# 2. Run the bench in the bench profile — separate container, separate cgroup,
-#    pinned to physically disjoint cores from the server.
-docker compose run --rm bench \
+# Run the bench. `bench` depends_on `server`, so compose starts the server
+# automatically the first time. Subsequent runs reuse the warm server.
+VERSION=v5_iou_mt docker compose run --rm bench \
     ./build/benchmark 127.0.0.1 9000 5 1472 4 4
 #                     │         │    │ │    │ │
 #                     │         │    │ │    │ └── sockets per sender (K)
@@ -24,7 +24,15 @@ docker compose run --rm bench \
 #                     │         │    └─────────── duration in seconds
 #                     │         └──────────────── server UDP port
 #                     └────────────────────────── server IP (loopback via shared netns)
+
+# When done, tear down
+VERSION=v5_iou_mt docker compose down
 ```
+
+Cold-start caveat: there's no healthcheck on the `server` service, so the very
+first bench invocation after a fresh `compose down` may lose a handful of
+packets while the server binds the port. ~100ms of a 5s run = noise; subsequent
+runs are warm-start and unaffected.
 
 CLI: `./build/benchmark <host> <port> [duration_s=5] [size=64] [num_senders=4] [sockets_per_sender=1]`
 
@@ -191,9 +199,9 @@ every worker gets roughly fair load:
 ```
 
 But we don't want N×K _sender threads_ — that's just extra context-switch
-cost. So each sender thread rotates through K sockets round-robin and gets K
-distinct src_ports out of N sender threads. The fanout is a property of the
-socket count, not the thread count.
+cost. So each sender thread rotates `sendto` across K sockets round-robin,
+emitting K distinct src_ports per sender for N×K distinct flows in total.
+The fanout is a property of the socket count, not the thread count.
 
 ## 5. all_fds — one allocation, two views
 
@@ -384,14 +392,20 @@ With pinning:
 
 The "1000 +" on the receiver pin call doesn't change the chosen CPU — it's
 just a log tag. The helper's first arg (`tid`) only appears in the log line
-(`thread 1000+r: pinned to cpu X`); the **second arg** (`n`) is what picks the
-CPU via `n % allowed_count`. So receiver `r` pins to `allowed[r % total]`,
-same as if we passed `(recv_id, recv_id)`. The 1000+ exists so the log shows
-at a glance whether a pin event is a sender or receiver. What actually
-prevents sender/receiver from contending on the same CPU is having enough
-CPUs in the cpuset to spread them out — with 4 senders + 16 receivers on an
-8-CPU cpuset, they **will** share, and that's fine because the receivers are
-mostly idle (blocked in `recvfrom`) while senders are CPU-bound.
+(e.g. `thread 1003: pinned to cpu 11`); the **second arg** (`n`) is what
+picks the CPU via `n % allowed_count`. So receiver `r` pins to
+`allowed[r % total]`, same as if we passed `(recv_id, recv_id)`. The 1000+
+exists so the log shows at a glance whether a pin event is a sender or
+receiver.
+
+With N=4 senders + N×K=16 receivers on an 8-CPU cpuset (`8-15`), pinning
+**doubles up** — both `recv_id=0` and `recv_id=8` land on cpu 8, alongside
+sender 0. That's intentional given the cpuset size, but it does mean **the
+bench is internally CPU-bound under high load**: senders and receivers
+time-slice on the same cores, capping offered load below what either side
+could deliver in isolation. You'll observe this as a stable plateau in pps
+even with a much faster server. To raise the plateau, give the bench more
+cores (`BENCH_CPUSET=4-15`) or move it to a separate machine.
 
 ## 10. Lifecycle — the orchestration
 
@@ -437,6 +451,9 @@ this flag — it's purely a "should I keep looping" hint.
 
 ## 11. The results output, decoded
 
+Output shape (specific numbers will vary by hardware, server version, and
+`N`/`K`):
+
 ```
 Benchmarking 127.0.0.1:9000 for 5s, psize=1472 bytes, senders=4, sockets/sender=4 (total flows=16)...
 [bench runs for 5 seconds]
@@ -445,20 +462,20 @@ Benchmarking 127.0.0.1:9000 for 5s, psize=1472 bytes, senders=4, sockets/sender=
 Duration:         5s
 Senders:          4 (sockets/sender=4, total flows=16)
 Packet size:      1472 bytes
-Packets sent:     14051970         ← summed across all sender threads
-Packets received: 7577500          ← summed across all receiver threads
-Dropped:          6474470 (46.1%)  ← sent - received (kernel drops + lost echoes)
-Mid-run stalls:   0 (≥100ms idle windows)
-Throughput:       1515500 pps      ← received / duration
+Packets sent:     <N>              ← summed across all sender threads
+Packets received: <N>              ← summed across all receiver threads
+Dropped:          <N> (X.X%)       ← sent - received (kernel drops + lost echoes)
+Mid-run stalls:   <N> (≥100ms idle windows)
+Throughput:       <pps>            ← received / duration
 
-Round-trip latency (µs) — 7577500 samples:
-  min   : 7.75
-  p50   : 392.00 (median)
-  p90   : 633.17
-  p99   : 976.54
-  p99.9 : 2051.38
-  max   : 4435.96
-  avg   : 404.34
+Round-trip latency (µs) — <N> samples:
+  min   : ...
+  p50   : ... (median)
+  p90   : ...
+  p99   : ...
+  p99.9 : ...
+  max   : ...
+  avg   : ...
 ```
 
 What each line really means:
@@ -479,7 +496,8 @@ What each line really means:
 - **`size < 16` is rounded up to 16** — must fit the header. Anything between
   16 and 1472 is fine.
 - **`size > 1472` is clamped to 1472** — anything larger would fragment over
-  Ethernet (MTU 1500 - IP 20 - UDP 8 = 1472).
+  Ethernet (MTU 1500 - IP 20 - UDP 8 = 1472). The cap matches one
+  unfragmented UDP-over-Ethernet frame.
 - **Latency cap silently truncates**. If the server delivers more than 100 M
   packets in your run window, samples past 100 M are dropped from the
   histogram. They're still counted in "received" — but the percentiles
