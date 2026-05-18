@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "../utils.h"
+
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
@@ -22,6 +24,11 @@ static void *worker_thread(void *arg) {
     thread_arg_t *targ = (thread_arg_t *)arg;
     int           port = targ->port;
     int           tid  = targ->tid;
+
+    /* Pin this worker to one CPU within the current affinity mask (docker cpuset
+     * or full host set). Stops the kernel from migrating the thread mid-loop —
+     * keeps L1/L2 warm and removes a major source of run-to-run variance. */
+    pin_to_nth_allowed_cpu(tid, tid);
 
     /* SOCK_DGRAM = UDP; 0 = default protocol for this socket type */
     int fd = socket(AF_INET, SOCK_DGRAM, 0);

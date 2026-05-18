@@ -8,11 +8,18 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "../utils.h"
+
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 
 int main(int argc, char *argv[]) {
     int port = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
+
+    /* Pin this single-threaded server to one CPU. With cpuset (docker/taskset)
+     * present, that's the first allowed CPU. Without, it falls to cpu 0. The
+     * goal is benchmark reproducibility, not throughput. */
+    pin_to_nth_allowed_cpu(0, 0);
 
     /* SOCK_DGRAM = UDP; 0 = default protocol for this socket type */
     int fd = socket(AF_INET, SOCK_DGRAM, 0);

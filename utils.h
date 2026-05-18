@@ -1,8 +1,13 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 /* Returns current time in nanoseconds from CLOCK_MONOTONIC.
@@ -44,6 +49,61 @@ static inline uint64_t percentile(uint64_t *sorted, size_t n, double p) {
     if (idx == 0) idx = 1;         /* minimum rank is 1 */
     if (idx > n) idx = n;          /* clamp to array length */
     return sorted[idx - 1];        /* convert rank (1-based) to index (0-based) */
+}
+
+/* Pin the calling thread to the nth CPU within the current affinity mask.
+ *
+ * "Current mask" = whatever sched_getaffinity reports for this thread — typically
+ * the docker cpuset (e.g. logical 0-7), or the host's full set if launched without
+ * any external pinning. We pick the nth set bit from that mask, modulo its size,
+ * and clamp the calling thread to that single CPU.
+ *
+ * Why nth-set-bit rather than just CPU = n: the allowed mask may not start at 0
+ * (host taskset, k8s cpuset, etc.) and may have holes. Indexing by set-bit makes
+ * worker N always land on the Nth *available* CPU — works whether siblings are
+ * adjacent (e.g. {0,1,2,3} on a 2-physical/SMT box) or one-per-physical-core
+ * (e.g. {0,2,4,6}). Caller doesn't need to know the topology.
+ *
+ * Logs the chosen cpu + size of the allowed set — if the operator forgot to set
+ * cpuset/taskset, "allowed=16 cpus" being printed when only 8 workers exist is
+ * the visible cue. */
+static inline int pin_to_nth_allowed_cpu(int tid, int n) {
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        perror("sched_getaffinity");
+        return -errno;
+    }
+
+    int total = CPU_COUNT(&allowed);
+    if (total == 0) return -ENODEV;
+
+    /* Modulo so callers with n >= total wrap rather than fail. Matches "round robin
+     * across the allowed set" semantics that callers usually want. */
+    int target = n % total;
+
+    int chosen = -1;
+    int seen   = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET(cpu, &allowed)) continue;
+        if (seen == target) {
+            chosen = cpu;
+            break;
+        }
+        seen++;
+    }
+
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(chosen, &one);
+    int rc = pthread_setaffinity_np(pthread_self(), sizeof(one), &one);
+    if (rc != 0) {
+        fprintf(stderr, "pthread_setaffinity_np cpu=%d: %s\n", chosen, strerror(rc));
+        return -rc;
+    }
+
+    printf("thread %d: pinned to cpu %d (allowed=%d cpus)\n", tid, chosen, total);
+    return 0;
 }
 
 #endif /* UTILS_H */

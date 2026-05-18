@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "../utils.h"
+
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
@@ -24,6 +26,9 @@ static void *worker_thread(void *arg) {
     thread_arg_t *targ = (thread_arg_t *)arg;
     int           port = targ->port;
     int           tid  = targ->tid;
+
+    /* Pin to one CPU within the current affinity mask — see v2 for rationale. */
+    pin_to_nth_allowed_cpu(tid, tid);
 
     /* SOCK_NONBLOCK: recvfrom/sendto return EAGAIN instead of blocking.
      * Pairs with epoll_wait so the thread blocks on the epoll fd, not the socket. */

@@ -2,16 +2,20 @@
  * benchmark.c — multi-sender fire-and-forget UDP benchmark
  *
  * Thread model (per sender):
- *   sender   — blasts packets as fast as possible on its own socket
- *   receiver — collects echoes from the same socket, records RTT independently
+ *   1 sender thread   — rotates sendto across K sockets, blasting flat-out
+ *   K receiver threads — each drains one socket independently, records RTT
  *
- * Decoupling send from receive lets many packets be in flight simultaneously,
- * stressing the server without the client blocking on each echo.
+ * Why K sockets per sender (not just more senders):
+ *   SO_REUSEPORT on the server hashes the 4-tuple to pick which bound socket
+ *   gets the packet. With N senders × 1 socket the bench produces N unique
+ *   4-tuples; if N < num_server_threads, some server threads never see traffic
+ *   (and the rest get unevenly hashed). Multiplying flows decouples flow count
+ *   from sender-thread count: we get N×K distinct flows without N×K sender
+ *   threads chewing bench CPU.
  *
- * Multiple senders (default 4): each sender owns a distinct UDP socket, which
- * gets a different ephemeral source port from the OS. This produces distinct
- * 4-tuples (src IP, src port, dst IP, dst port), causing SO_REUSEPORT on the
- * server to hash them to different server threads — all threads get exercised.
+ * Total bench threads = N + N×K (e.g. N=4, K=4 → 20 threads).
+ * All threads pin to one CPU via pin_to_nth_allowed_cpu so the scheduler can't
+ * migrate them mid-loop — kills a major variance source on the measurement side.
  *
  * Packet layout (16-byte header + padding):
  *   [0..7]   uint64_t seq          — per-sender sequence number
@@ -24,9 +28,9 @@
  *   gcc -O2 -D_GNU_SOURCE -lpthread -o benchmark benchmark.c
  *
  * Run:
- *   ./benchmark <host> <port> [duration_s] [size] [num_senders]
- *   ./benchmark 127.0.0.1 9000                    # defaults: 5s, 64B, 4 senders
- *   ./benchmark 127.0.0.1 9000 10 1472 8          # 10s, max-size packets, 8 senders
+ *   ./benchmark <host> <port> [duration_s] [size] [num_senders] [sockets_per_sender]
+ *   ./benchmark 127.0.0.1 9000                          # defaults: 5s, 64B, 4 senders, K=1
+ *   ./benchmark 127.0.0.1 9000 5 1472 4 4               # 5s, max-size, 4 senders × 4 socks
  */
 
 #include <errno.h>
@@ -47,56 +51,73 @@
 #include "utils.h"
 
 #define MAX_PKG_SIZE 1472     /* mtu(1500) - ip(20) - udp(8) */
-#define PKT_HDR 16            /* packet header size: seq(8 bytes) + send_time_ns(8 bytes) */
-#define MAX_SAMPLES 100000000 /* cap latencies at 100M samples (~800MB) to bound memory usage */
+#define PKT_HDR 16            /* packet header: seq(8) + send_time_ns(8) */
+#define MAX_SAMPLES 100000000 /* cap latencies at 100M samples (~800MB) */
 
 /* -------------------------------------------------------------------------- */
 /* Globals shared between threads                                             */
 /* -------------------------------------------------------------------------- */
-/* _Atomic: stronger than volatile — guarantees atomic read/write and prevents
- * CPU reordering, not just compiler caching. correct for a flag shared between threads. */
 static _Atomic int        g_running;
-static struct sockaddr_in g_host;  /* destination address */
-static size_t             g_psize; /* packet size in bytes, immutable after thread launch */
+static struct sockaddr_in g_host;
+static size_t             g_psize;
 
-static uint64_t      *g_latencies;   /* heap array of RTT samples in nanoseconds */
-static _Atomic size_t g_lat_idx = 0; /* next free slot; atomic — multiple receivers claim indices */
+static uint64_t      *g_latencies;
+static _Atomic size_t g_lat_idx = 0;
 
-/* Per-pair argument and result struct.
- * fd is written by main before thread launch (read-only to both threads).
- * sent/received are written by each thread after exit, read by main after join — no race. */
-typedef struct worker_arg_t {
-    int      fd;       /* in:  socket owned by this sender/receiver pair */
-    uint64_t sent;     /* out: total packets sent, filled by sender_thread */
-    uint64_t received; /* out: total echoes received, filled by receiver_thread */
-    uint64_t stalls;   /* out: mid-run recv timeouts (≥100ms idle while sender running) */
-} worker_arg_t;
+/* -------------------------------------------------------------------------- */
+/* Sender / receiver argument structs                                          */
+/* -------------------------------------------------------------------------- */
+/* Sender: one thread, K fds. Rotates sendto across the K fds in round-robin
+ * order so each call drains to a different ephemeral src port, producing K
+ * distinct 4-tuples per sender thread without spawning K sender threads. */
+typedef struct sender_arg_t {
+    int      sender_id; /* used as pin index */
+    int      k;
+    int     *fds; /* k fds, lifetime tied to main */
+    uint64_t sent;
+} sender_arg_t;
+
+/* Receiver: one thread per socket. recv_id is a globally unique index across
+ * all bench receivers (0..N*K) — used for pinning so each receiver lands on
+ * a distinct CPU when the cpuset has room. */
+typedef struct receiver_arg_t {
+    int      recv_id; /* used as pin index */
+    int      fd;
+    uint64_t received;
+    uint64_t stalls;
+} receiver_arg_t;
 
 /* -------------------------------------------------------------------------- */
 /* Sender thread                                                              */
 /* -------------------------------------------------------------------------- */
 static void *sender_thread(void *arg) {
-    worker_arg_t *warg = arg;
+    sender_arg_t *sarg = arg;
+
+    /* Pin: sender 0 → first allowed cpu, sender 1 → second, etc. */
+    pin_to_nth_allowed_cpu(sarg->sender_id, sarg->sender_id);
 
     char     buf[MAX_PKG_SIZE];
-    uint64_t seq = 0; /* seq doubles as sent count — incremented only on success */
+    uint64_t seq = 0;
+    int      i   = 0; /* round-robin index across fds */
 
-    memset(buf, 0, g_psize); /* optional */
+    memset(buf, 0, g_psize);
 
     while (g_running) {
         uint64_t t0 = now_ns();
 
-        /* write header into first 16 bytes of payload */
         memcpy(buf, &seq, 8);
         memcpy(buf + 8, &t0, 8);
 
-        ssize_t s = sendto(warg->fd, buf, g_psize, 0, (struct sockaddr *)&g_host, sizeof(g_host));
+        int     fd = sarg->fds[i];
+        ssize_t s  = sendto(fd, buf, g_psize, 0, (struct sockaddr *)&g_host, sizeof(g_host));
         if (s > 0) seq++;
         else fprintf(stderr, "sendto failed (seq=%llu): %s\n", (unsigned long long)seq, strerror(errno));
+
+        i++;
+        if (i >= sarg->k) i = 0;
     }
 
-    warg->sent = seq;
-
+    sarg->sent = seq;
     return NULL;
 }
 
@@ -104,47 +125,45 @@ static void *sender_thread(void *arg) {
 /* Receiver thread                                                             */
 /* -------------------------------------------------------------------------- */
 static void *receiver_thread(void *arg) {
-    worker_arg_t *warg = arg;
+    receiver_arg_t *rarg = arg;
+
+    /* Pin: receivers are offset past the senders in the pin sequence so
+     * receiver 0 doesn't collide with sender 0. The helper modulos against
+     * the allowed cpu count, so the offset just shifts which cpu each lands on. */
+    pin_to_nth_allowed_cpu(1000 + rarg->recv_id, rarg->recv_id);
 
     char     buf[MAX_PKG_SIZE];
     uint64_t received = 0;
     uint64_t stalls   = 0;
 
     while (1) {
-        ssize_t r = recvfrom(warg->fd, buf, sizeof(buf), 0, NULL, NULL);
+        ssize_t r = recvfrom(rarg->fd, buf, sizeof(buf), 0, NULL, NULL);
 
         /* SO_RCVTIMEO fires as EAGAIN — once sender has stopped and buffer
-         * is empty (timeout with no packets), exit the receiver loop.
-         * Timeouts that fire while sender is still running are mid-run stalls:
-         * ≥100ms idle windows that indicate server stalls or kernel drops. */
+         * is empty, exit. Mid-run timeouts (sender still running) count as stalls. */
         if (r < 0) {
-            if (!g_running) break; /* sender done + buffer drained */
+            if (!g_running) break;
             if (errno == EAGAIN || errno == EWOULDBLOCK) stalls++;
             continue;
         }
 
-        /* packet too short to contain a valid header */
         if (r < PKT_HDR) continue;
 
         uint64_t t1 = now_ns();
 
-        /* read the send timestamp embedded in the echoed payload */
         uint64_t send_time;
         memcpy(&send_time, buf + 8, 8);
 
-        /* sanity check: discard if echoed time looks wrong */
         if (send_time == 0 || send_time > t1) continue;
 
         received++;
 
-        /* store RTT sample if we still have room */
         size_t idx = atomic_fetch_add(&g_lat_idx, 1);
         if (idx < MAX_SAMPLES) g_latencies[idx] = t1 - send_time;
     }
 
-    warg->received = received;
-    warg->stalls   = stalls;
-
+    rarg->received = received;
+    rarg->stalls   = stalls;
     return NULL;
 }
 
@@ -153,7 +172,7 @@ static void *receiver_thread(void *arg) {
 /* -------------------------------------------------------------------------- */
 int main(int argc, char *argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s <host> <port> [duration_s] [size] [num_senders]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <host> <port> [duration_s] [size] [num_senders] [sockets_per_sender]\n", argv[0]);
         return 1;
     }
 
@@ -162,11 +181,16 @@ int main(int argc, char *argv[]) {
     int         dur  = (argc > 3) ? atoi(argv[3]) : 5;
     g_psize          = (argc > 4) ? (size_t)atoi(argv[4]) : 64;
     int num_senders  = (argc > 5) ? atoi(argv[5]) : 4;
+    int k            = (argc > 6) ? atoi(argv[6]) : 1;
 
     if (g_psize < PKT_HDR) g_psize = PKT_HDR;
     if (g_psize > MAX_PKG_SIZE) g_psize = MAX_PKG_SIZE;
     if (num_senders < 1 || num_senders > 256) {
         fprintf(stderr, "num_senders must be 1..256\n");
+        return 1;
+    }
+    if (k < 1 || k > 256) {
+        fprintf(stderr, "sockets_per_sender must be 1..256\n");
         return 1;
     }
 
@@ -179,19 +203,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* one socket per sender — distinct ephemeral src port each, so SO_REUSEPORT on the
-     * server distributes packets across server threads by 4-tuple hash */
-    worker_arg_t   workers[num_senders];
-    struct timeval tv     = {.tv_sec = 0, .tv_usec = 100000}; /* 100ms recv timeout */
-    int            rcvbuf = 4 * 1024 * 1024;
-    for (int i = 0; i < num_senders; i++) {
-        workers[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (workers[i].fd < 0) {
+    int num_sockets = num_senders * k;
+
+    /* One socket per (sender, fanout) pair — each gets a distinct ephemeral
+     * src port → distinct 4-tuple → distinct SO_REUSEPORT hash → broader
+     * coverage of server worker threads. */
+    int           *all_fds = calloc(num_sockets, sizeof(int));
+    struct timeval tv      = {.tv_sec = 0, .tv_usec = 100000};
+    int            rcvbuf  = 4 * 1024 * 1024;
+    for (int i = 0; i < num_sockets; i++) {
+        all_fds[i] = socket(AF_INET, SOCK_DGRAM, 0);
+        if (all_fds[i] < 0) {
             perror("socket");
             return 1;
         }
-        setsockopt(workers[i].fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(workers[i].fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+        setsockopt(all_fds[i], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(all_fds[i], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
     }
 
     g_latencies = malloc(MAX_SAMPLES * sizeof(uint64_t));
@@ -200,32 +227,42 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Benchmarking %s:%d for %ds, psize=%zu bytes, senders=%d...\n", host, port, dur, g_psize, num_senders);
+    printf("Benchmarking %s:%d for %ds, psize=%zu bytes, senders=%d, sockets/sender=%d (total flows=%d)...\n", host,
+           port, dur, g_psize, num_senders, k, num_sockets);
 
-    g_running = 1;
-    pthread_t stids[num_senders];
-    pthread_t rtids[num_senders];
-    for (int i = 0; i < num_senders; i++) {
-        pthread_create(&rtids[i], NULL, receiver_thread, &workers[i]);
-        pthread_create(&stids[i], NULL, sender_thread, &workers[i]);
+    sender_arg_t   *senders   = calloc(num_senders, sizeof(sender_arg_t));
+    receiver_arg_t *receivers = calloc(num_sockets, sizeof(receiver_arg_t));
+
+    for (int s = 0; s < num_senders; s++) {
+        senders[s].sender_id = s;
+        senders[s].k         = k;
+        senders[s].fds       = &all_fds[s * k];
     }
+    for (int r = 0; r < num_sockets; r++) {
+        receivers[r].recv_id = r;
+        receivers[r].fd      = all_fds[r];
+    }
+
+    g_running        = 1;
+    pthread_t *stids = calloc(num_senders, sizeof(pthread_t));
+    pthread_t *rtids = calloc(num_sockets, sizeof(pthread_t));
+    for (int r = 0; r < num_sockets; r++) pthread_create(&rtids[r], NULL, receiver_thread, &receivers[r]);
+    for (int s = 0; s < num_senders; s++) pthread_create(&stids[s], NULL, sender_thread, &senders[s]);
 
     sleep(dur);
     g_running = 0;
 
-    for (int i = 0; i < num_senders; i++) {
-        pthread_join(stids[i], NULL);
-        pthread_join(rtids[i], NULL);
-        close(workers[i].fd);
-    }
+    for (int s = 0; s < num_senders; s++) pthread_join(stids[s], NULL);
+    for (int r = 0; r < num_sockets; r++) pthread_join(rtids[r], NULL);
+    for (int i = 0; i < num_sockets; i++) close(all_fds[i]);
 
     uint64_t total_sent   = 0;
     uint64_t total_recv   = 0;
     uint64_t total_stalls = 0;
-    for (int i = 0; i < num_senders; i++) {
-        total_sent += workers[i].sent;
-        total_recv += workers[i].received;
-        total_stalls += workers[i].stalls;
+    for (int s = 0; s < num_senders; s++) total_sent += senders[s].sent;
+    for (int r = 0; r < num_sockets; r++) {
+        total_recv += receivers[r].received;
+        total_stalls += receivers[r].stalls;
     }
 
     size_t n_lat = total_recv < MAX_SAMPLES ? (size_t)total_recv : MAX_SAMPLES;
@@ -234,7 +271,7 @@ int main(int argc, char *argv[]) {
 
     printf("\n--- Results ---\n");
     printf("Duration:         %ds\n", dur);
-    printf("Senders:          %d\n", num_senders);
+    printf("Senders:          %d (sockets/sender=%d, total flows=%d)\n", num_senders, k, num_sockets);
     printf("Packet size:      %zu bytes\n", g_psize);
     printf("Packets sent:     %llu\n", (unsigned long long)total_sent);
     printf("Packets received: %llu\n", (unsigned long long)total_recv);
@@ -245,6 +282,11 @@ int main(int argc, char *argv[]) {
     if (n_lat == 0) {
         printf("No latency samples collected.\n");
         free(g_latencies);
+        free(all_fds);
+        free(senders);
+        free(receivers);
+        free(stids);
+        free(rtids);
         return 0;
     }
 
@@ -263,5 +305,10 @@ int main(int argc, char *argv[]) {
     printf("  avg   : %.2f\n", (double)sum / (double)n_lat / 1000.0);
 
     free(g_latencies);
+    free(all_fds);
+    free(senders);
+    free(receivers);
+    free(stids);
+    free(rtids);
     return 0;
 }

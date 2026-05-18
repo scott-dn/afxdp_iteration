@@ -11,6 +11,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "../utils.h"
+
 #define MAX_PKG_SIZE 1472 /* mtu(1500) - ip(20) - udp(8) */
 #define DEFAULT_PORT 9000
 #define DEFAULT_THREADS 8
@@ -31,6 +33,9 @@ static void *worker_thread(void *arg) {
     thread_arg_t *targ = (thread_arg_t *)arg;
     int           port = targ->port;
     int           tid  = targ->tid;
+
+    /* Pin to one CPU within the current affinity mask — see v2 for rationale. */
+    pin_to_nth_allowed_cpu(tid, tid);
 
     /* Identical socket setup to v3 — only the recv/send strategy changes in v4. */
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
@@ -91,11 +96,11 @@ static void *worker_thread(void *arg) {
     /* Per-thread batch state — stack allocated, sized at compile time.
      *   bufs[i]  — receive buffer for packet i
      *   iovs[i]  — points iovec at bufs[i]; length is patched after recv (see hot loop)
-     *   srcs[i]  — sender address for packet i; recvmmsg fills one per packet
+     *   addrs[i]  — sender address for packet i; recvmmsg fills one per packet
      *   msgs[i]  — wires it all together for recvmmsg/sendmmsg */
     char               bufs[BATCH][MAX_PKG_SIZE];
     struct iovec       iovs[BATCH];
-    struct sockaddr_in srcs[BATCH];
+    struct sockaddr_in addrs[BATCH];
     struct mmsghdr     msgs[BATCH];
 
     /* One-time wiring: iovec → buf, mmsghdr → iovec + sockaddr.
@@ -104,7 +109,7 @@ static void *worker_thread(void *arg) {
     for (int i = 0; i < BATCH; i++) {
         iovs[i].iov_base           = bufs[i];
         iovs[i].iov_len            = MAX_PKG_SIZE;
-        msgs[i].msg_hdr.msg_name   = &srcs[i];
+        msgs[i].msg_hdr.msg_name   = &addrs[i];
         msgs[i].msg_hdr.msg_iov    = &iovs[i];
         msgs[i].msg_hdr.msg_iovlen = 1;
     }
@@ -127,7 +132,7 @@ static void *worker_thread(void *arg) {
              * also patched below to the received size; restore it to the full capacity
              * here so the next recv has room for a full MTU packet. */
             for (int i = 0; i < BATCH; i++) {
-                msgs[i].msg_hdr.msg_namelen = sizeof(srcs[i]);
+                msgs[i].msg_hdr.msg_namelen = sizeof(addrs[i]);
                 iovs[i].iov_len             = MAX_PKG_SIZE;
             }
 
