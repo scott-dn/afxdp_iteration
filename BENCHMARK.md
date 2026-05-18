@@ -30,14 +30,14 @@ CLI: `./build/benchmark <host> <port> [duration_s=5] [size=64] [num_senders=4] [
 
 ## CLI knobs in one table
 
-| arg                   | default | what it controls                                                              |
-| --------------------- | ------- | ----------------------------------------------------------------------------- |
-| `host`                | —       | server IP (loopback or LAN address)                                           |
-| `port`                | —       | server UDP port                                                               |
-| `duration_s`          | 5       | wall-clock seconds the senders run                                            |
-| `size`                | 64      | total packet bytes (first 16 = header, rest = zero-padded payload)            |
-| `num_senders` (N)     | 4       | how many sender *threads*                                                     |
-| `sockets_per_sender` (K) | 1    | how many sockets each sender rotates across (fanout multiplier)               |
+| arg                      | default | what it controls                                                   |
+| ------------------------ | ------- | ------------------------------------------------------------------ |
+| `host`                   | —       | server IP (loopback or LAN address)                                |
+| `port`                   | —       | server UDP port                                                    |
+| `duration_s`             | 5       | wall-clock seconds the senders run                                 |
+| `size`                   | 64      | total packet bytes (first 16 = header, rest = zero-padded payload) |
+| `num_senders` (N)        | 4       | how many sender _threads_                                          |
+| `sockets_per_sender` (K) | 1       | how many sockets each sender rotates across (fanout multiplier)    |
 
 Total sockets in flight: **N × K**. Total bench threads: **N + N×K + 1 main**.
 
@@ -45,34 +45,34 @@ Total sockets in flight: **N × K**. Total bench threads: **N + N×K + 1 main**.
 
 ```
                                 bench process
-   ┌─────────────────────────────────────────────────────────────────────────┐
-   │                                                                         │
-   │   main thread:                                                          │
-   │     • parse argv → host, port, dur, size, N, K                          │
-   │     • allocate all_fds[N*K]                                             │
-   │     • create sockets, set SO_RCVTIMEO=100ms, SO_RCVBUF=4MB              │
-   │     • spawn N senders + N*K receivers                                   │
-   │     • sleep(dur); set g_running = 0                                     │
-   │     • join, free, print results                                         │
-   │                                                                         │
-   │   ┌─────────────────────┐         ┌────────────────────────────────┐   │
-   │   │  sender threads (N) │         │  receiver threads (N*K)        │   │
-   │   │                     │         │                                │   │
-   │   │  s=0  ──► fds[0..K) │         │   r=0   ──► fd = all_fds[0]    │   │
-   │   │  s=1  ──► fds[K..2K)│         │   r=1   ──► fd = all_fds[1]    │   │
-   │   │  s=2  ──► fds[2K..) │         │   ...                          │   │
-   │   │  ...                │         │   r=N*K-1 ─► fd = all_fds[N*K-1] │ │
-   │   │                     │         │                                │   │
-   │   │  each rotates       │         │   each drains ONE socket,      │   │
-   │   │  sendto across K    │         │   computes RTT from payload,   │   │
-   │   │  fds round-robin    │         │   appends to g_latencies[]     │   │
-   │   └──────────┬──────────┘         └────────────────┬───────────────┘   │
-   │              │                                     ▲                   │
-   │              │ sendto(fd, [seq, t0, padding])      │ recvfrom(fd, ...)  │
-   │              ▼                                     │ RTT = now - t0    │
-   │       ┌────────────────────────────────────────────┴────────────┐      │
-   │       │              N*K UDP sockets in this process            │      │
-   │       └────────────────────────────────────────────┬────────────┘      │
+   ┌──────────────────────────────────────────────────────────────────────────┐
+   │                                                                          │
+   │   main thread:                                                           │
+   │     • parse argv → host, port, dur, size, N, K                           │
+   │     • allocate all_fds[N*K]                                              │
+   │     • create sockets, set SO_RCVTIMEO=100ms, SO_RCVBUF=4MB               │
+   │     • spawn N senders + N*K receivers                                    │
+   │     • sleep(dur); set g_running = 0                                      │
+   │     • join, free, print results                                          │
+   │                                                                          │
+   │   ┌─────────────────────┐         ┌──────────────────────────────────┐   │
+   │   │  sender threads (N) │         │  receiver threads (N*K)          │   │
+   │   │                     │         │                                  │   │
+   │   │  s=0  ──► fds[0..K) │         │   r=0   ──► fd = all_fds[0]      │   │
+   │   │  s=1  ──► fds[K..2K)│         │   r=1   ──► fd = all_fds[1]      │   │
+   │   │  s=2  ──► fds[2K..) │         │   ...                            │   │
+   │   │  ...                │         │   r=N*K-1 ─► fd = all_fds[N*K-1] │   │
+   │   │                     │         │                                  │   │
+   │   │  each rotates       │         │   each drains ONE socket,        │   │
+   │   │  sendto across K    │         │   computes RTT from payload,     │   │
+   │   │  fds round-robin    │         │   appends to g_latencies[]       │   │
+   │   └──────────┬──────────┘         └────────────────┬─────────────────┘   │
+   │              │                                     ▲                     │
+   │              │ sendto(fd, [seq, t0, padding])      │ recvfrom(fd, ...)   │
+   │              ▼                                     │ RTT = now - t0      │
+   │       ┌────────────────────────────────────────────┴────────────┐        │
+   │       │              N*K UDP sockets in this process            │        │
+   │       └────────────────────────────────────────────┬────────────┘        │
    └────────────────────────────────────────────────────┼─────────────────────┘
                                                         │
                                                 kernel UDP loopback
@@ -82,7 +82,7 @@ Total sockets in flight: **N × K**. Total bench threads: **N + N×K + 1 main**.
    │      port 9000, N_server worker threads,           │                     │
    │      SO_REUSEPORT distributes packets across       │                     │
    │      workers based on a hash of the 4-tuple        │                     │
-   └─────────────────────────────────────────────────────────────────────────┘
+   └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 2. The load pattern — fire-and-forget, not ping-pong
@@ -138,9 +138,11 @@ is required** because both timestamps (`t0` at sender, `now_ns()` at receiver)
 come from the same `CLOCK_MONOTONIC` in the **same process**.
 
 Sanity check on validity:
+
 ```c
 if (send_time == 0 || send_time > t1) continue;
 ```
+
 - `== 0`: payload byte 8..15 was zero — not a packet from us, or corruption.
 - `> t1`: would imply a negative RTT — impossible, skip rather than poison
   the histogram.
@@ -188,7 +190,7 @@ every worker gets roughly fair load:
      w0  w1  w2  w3  w4  w5  w6  w7
 ```
 
-But we don't want N×K *sender threads* — that's just extra context-switch
+But we don't want N×K _sender threads_ — that's just extra context-switch
 cost. So each sender thread rotates through K sockets round-robin and gets K
 distinct src_ports out of N sender threads. The fanout is a property of the
 socket count, not the thread count.
@@ -249,6 +251,7 @@ while (g_running) {
 ```
 
 Properties:
+
 - **No `recvfrom`** anywhere — the sender is write-only.
 - **No backpressure**. A failed `sendto` increments an error counter but
   doesn't slow the loop. UDP loopback rarely fails outright; what gets dropped
@@ -292,7 +295,7 @@ Three things to notice:
    wedge briefly?" signal that doesn't require parsing latencies.
 3. **Lock-free sample append**. `atomic_fetch_add(&g_lat_idx, 1)` claims a
    slot; the receiver writes into `g_latencies[idx]`. Race-free because each
-   receiver gets a *different* index (atomic counter), and the array is
+   receiver gets a _different_ index (atomic counter), and the array is
    pre-allocated and never reallocated.
 
 ## 8. How latency samples land in the histogram
@@ -321,6 +324,7 @@ Three things to notice:
 ```
 
 Why this works:
+
 - **No mutex on the hot path.** `atomic_fetch_add` is a single atomic RMW
   instruction (`lock xadd` on x86, `LDADD` on ARMv8.1+) — much cheaper than a
   pthread mutex.
@@ -348,6 +352,7 @@ pin_to_nth_allowed_cpu(1000 + rarg->recv_id, rarg->recv_id); // receiver r → c
 ```
 
 The helper (in `utils.h`) does three things:
+
 1. Reads the current affinity mask via `sched_getaffinity` — this is what
    Docker handed us via cpuset.
 2. Finds the **nth set bit** in that mask (`n % CPU_COUNT(mask)`).
@@ -363,6 +368,7 @@ The helper (in `utils.h`) does three things:
 ```
 
 Why pin? Without pinning:
+
 - The scheduler can migrate threads mid-run → cold caches → variance.
 - Receiver and sender may opportunistically share an SMT sibling → unusually
   fast RTT for a few microseconds → spiky throughput numbers.
@@ -370,6 +376,7 @@ Why pin? Without pinning:
   trying to measure.
 
 With pinning:
+
 - Every packet takes the same path through the same caches between the same
   CPUs.
 - Run-to-run variance collapses.
@@ -456,16 +463,16 @@ Round-trip latency (µs) — 7577500 samples:
 
 What each line really means:
 
-| Line              | Definition                                                                        | What to look for                                |
-| ----------------- | --------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Packets sent      | Sum of `sender.sent` — every `sendto` that returned > 0                           | Sanity: should grow ~linearly with `N × dur`    |
-| Packets received  | Sum of `receiver.received` — every well-formed echoed packet                      | This is the headline measurement                |
-| Dropped           | `sent - received` — packets lost somewhere in the round trip                      | High % = server can't keep up at this load      |
-| Mid-run stalls    | Count of `EAGAIN`s while `g_running` was still true                               | Non-zero = server paused for ≥100 ms during run |
-| Throughput        | `received / duration` — *delivered* pps, not offered load                         | The number to compare versions on               |
-| min / p50 / ...   | Percentiles over all collected RTTs (post-`qsort`)                                | p99 / p99.9 reveal tail-latency cliffs          |
-| max               | Highest RTT observed                                                              | Often noisy on cold-cache first packets         |
-| avg               | Arithmetic mean over the sample set                                               | Sensitive to outliers — prefer p50              |
+| Line             | Definition                                                   | What to look for                                |
+| ---------------- | ------------------------------------------------------------ | ----------------------------------------------- |
+| Packets sent     | Sum of `sender.sent` — every `sendto` that returned > 0      | Sanity: should grow ~linearly with `N × dur`    |
+| Packets received | Sum of `receiver.received` — every well-formed echoed packet | This is the headline measurement                |
+| Dropped          | `sent - received` — packets lost somewhere in the round trip | High % = server can't keep up at this load      |
+| Mid-run stalls   | Count of `EAGAIN`s while `g_running` was still true          | Non-zero = server paused for ≥100 ms during run |
+| Throughput       | `received / duration` — _delivered_ pps, not offered load    | The number to compare versions on               |
+| min / p50 / ...  | Percentiles over all collected RTTs (post-`qsort`)           | p99 / p99.9 reveal tail-latency cliffs          |
+| max              | Highest RTT observed                                         | Often noisy on cold-cache first packets         |
+| avg              | Arithmetic mean over the sample set                          | Sensitive to outliers — prefer p50              |
 
 ## 12. Pitfalls and gotchas
 
@@ -509,19 +516,19 @@ Start with the defaults (`N=4, K=1`) to confirm the server works. Then:
 
 ## 14. Why this design — design choices justified
 
-| Choice                                     | Alternative                                  | Why we picked this                                                                                       |
-| ------------------------------------------ | -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Fire-and-forget                            | Ping-pong (send→wait→recv)                   | Decouples throughput from RTT; one slow run doesn't ruin throughput; throughput limited by server, not bench |
-| Timestamp in payload                       | Shared map: seq → send_time                  | No mutex/atomic on the sender hot path; receiver has zero shared state with sender                       |
-| `CLOCK_MONOTONIC` from same process        | Per-host NTP-synced clocks                   | Bench is single-process; no skew between sender and receiver                                             |
-| `atomic_fetch_add` slot claim              | Per-thread arrays + concat at end            | Simpler; one big sort at end; cache-line ping-pong on `g_lat_idx` is the only cost                       |
-| Pre-allocated 800 MB buffer                | Resize on demand                             | No alloc on the hot path; bounded memory; sorting is faster on contiguous memory                         |
-| Pin every thread to one CPU                | Let scheduler decide                         | Run-to-run variance was dominated by scheduling decisions; pinning makes the measurement reproducible    |
-| N senders × K sockets (not N×K senders)    | N×K sender threads                           | Same flow coverage, fewer threads, fewer context switches on the bench side                              |
-| `SO_RCVTIMEO = 100 ms` on receivers        | Non-blocking + epoll                         | Simpler code; bench is allowed to "waste" a bit on EAGAIN since it isn't the measurement target          |
-| One big `qsort` at end                     | Streaming percentile estimator (HDR, t-digest) | Exact percentiles; debuggable; cost is amortized once, off the hot path                                  |
+| Choice                                  | Alternative                                    | Why we picked this                                                                                           |
+| --------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Fire-and-forget                         | Ping-pong (send→wait→recv)                     | Decouples throughput from RTT; one slow run doesn't ruin throughput; throughput limited by server, not bench |
+| Timestamp in payload                    | Shared map: seq → send_time                    | No mutex/atomic on the sender hot path; receiver has zero shared state with sender                           |
+| `CLOCK_MONOTONIC` from same process     | Per-host NTP-synced clocks                     | Bench is single-process; no skew between sender and receiver                                                 |
+| `atomic_fetch_add` slot claim           | Per-thread arrays + concat at end              | Simpler; one big sort at end; cache-line ping-pong on `g_lat_idx` is the only cost                           |
+| Pre-allocated 800 MB buffer             | Resize on demand                               | No alloc on the hot path; bounded memory; sorting is faster on contiguous memory                             |
+| Pin every thread to one CPU             | Let scheduler decide                           | Run-to-run variance was dominated by scheduling decisions; pinning makes the measurement reproducible        |
+| N senders × K sockets (not N×K senders) | N×K sender threads                             | Same flow coverage, fewer threads, fewer context switches on the bench side                                  |
+| `SO_RCVTIMEO = 100 ms` on receivers     | Non-blocking + epoll                           | Simpler code; bench is allowed to "waste" a bit on EAGAIN since it isn't the measurement target              |
+| One big `qsort` at end                  | Streaming percentile estimator (HDR, t-digest) | Exact percentiles; debuggable; cost is amortized once, off the hot path                                      |
 
-The benchmark is intentionally simple — every layer that *could* be smarter
+The benchmark is intentionally simple — every layer that _could_ be smarter
 (streaming percentiles, lock-free MPMC sample queues, vectored I/O on the
 sender) was rejected because the goal is **measurement fidelity for v1..vN
 deltas**, not benchmark-tool throughput records.
