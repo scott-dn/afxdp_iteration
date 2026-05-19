@@ -145,7 +145,7 @@ static void *worker_thread(void *arg) {
      *                 Latency floor matches v4/v3; throughput cost is small
      *                 (one syscall per ~hundreds of packets in the batch).
      * v5's distinctive wins (multishot recv, provided buffer ring, no per-packet
-     * SQE bookkeeping) remain regardless of SQPOLL. See RESULT.MD for the data. */
+     * SQE bookkeeping) remain regardless of SQPOLL. See RESULT.md for the data. */
 
     /* RING_ENTRIES is a *request*: the kernel rounds up to a power of two and may
      * clamp by IORING_MAX_ENTRIES. The actual sizes land in params.sq_entries

@@ -2,7 +2,7 @@
 
 UDP echo server that replaces v4's `epoll` + `recvmmsg`/`sendmmsg` with a per-thread `io_uring` ring using **multishot `recvmsg`** (one SQE produces many recv completions) and **provided buffer rings** (kernel pulls recv buffers from a pool the app registers). The hot path does one `io_uring_enter` per CQ-drain cycle and zero per-packet SQE bookkeeping for recv.
 
-> **Note on `SQPOLL`:** the kernel-side submission poller was tried (`IORING_SETUP_SQPOLL`) and found to be a net loss on this workload — see `RESULT.MD`. Lower latency at single-flight, no measurable throughput penalty at high pps, fewer moving parts. Section 9 below contrasts the two modes.
+> **Note on `SQPOLL`:** the kernel-side submission poller was tried (`IORING_SETUP_SQPOLL`) and found to be a net loss on this workload — see `RESULT.md`. Lower latency at single-flight, no measurable throughput penalty at high pps, fewer moving parts. Section 9 below contrasts the two modes.
 
 ## Requirements
 
@@ -284,11 +284,12 @@ poller thread services submits directly without `io_uring_enter`. But:
 
 For this UDP echo workload, the drain-the-CQ loop already amortizes
 submits across many CQEs, so the one `io_uring_enter` per cycle is cheap.
-SQPOLL would save it but cost much more in latency. See `RESULT.MD` for
+SQPOLL would save it but cost much more in latency. See `RESULT.md` for
 the measured tradeoff (892k pps at 0% drop without SQPOLL, ~847k pps at
 0% drop with SQPOLL, but latency floor 7 µs vs 547 µs).
 
 SQPOLL would pay off when:
+
 - Submits cannot batch (one syscall per packet would actually fire).
 - Single-flight latency doesn't matter (sustained one-way streaming).
 - A dedicated CPU can be reserved for the poller via
