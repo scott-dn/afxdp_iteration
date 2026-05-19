@@ -5,12 +5,12 @@
 After two code changes — pin worker threads, drop `IORING_SETUP_SQPOLL` — v5
 clearly beats v4 on this hardware:
 
-| metric                       | v4 mmsg_mt | v5 iou_mt (final) | delta            |
-| ---------------------------- | ---------- | ----------------- | ---------------- |
-| sustained throughput, 0% drop | ~535k pps  | **~893k pps**     | **+67%**         |
-| capacity ceiling (drops OK)   | ~870k pps  | ~977k pps         | +12%             |
+| metric                        | v4 mmsg_mt | v5 iou_mt (final) | delta               |
+| ----------------------------- | ---------- | ----------------- | ------------------- |
+| sustained throughput, 0% drop | ~535k pps  | **~893k pps**     | **+67%**            |
+| capacity ceiling (drops OK)   | ~870k pps  | ~977k pps         | +12%                |
 | latency floor (min)           | 6.1 µs     | 7.1 µs            | ~tie (within noise) |
-| latency floor (p50)           | 13.7 µs    | 16.5 µs           | ~tie             |
+| latency floor (p50)           | 13.7 µs    | 16.5 µs           | ~tie                |
 
 The throughput win comes from `io_uring`'s multishot recv + provided buffer
 ring eliminating per-packet SQE bookkeeping. The "no regression" on latency
@@ -40,9 +40,9 @@ the alternative is documented; can be deleted later.
 
 The v5 baseline from earlier in the project:
 
-| config                         | pps  | drop % | min µs | p50    |
-| ------------------------------ | ---- | ------ | ------ | ------ |
-| T=8, B=8-15, N=4 K=1 (no pin)  | 343k | 45.6%  | 172    | 25 ms  |
+| config                        | pps  | drop % | min µs | p50   |
+| ----------------------------- | ---- | ------ | ------ | ----- |
+| T=8, B=8-15, N=4 K=1 (no pin) | 343k | 45.6%  | 172    | 25 ms |
 
 That run had no worker pinning, no bench K-fanout, and `SQPOLL` enabled. The
 high drop and milliseconds-of-p50 were a mix of scheduler thrash (8 SQPOLL
@@ -53,11 +53,11 @@ poller stealing CPU from workers.
 
 Added the pin call, kept SQPOLL.
 
-| config                          | pps  | drop % | min µs | p50    |
-| ------------------------------- | ---- | ------ | ------ | ------ |
-| T=8,  B=8-15, N=4 K=4           | 598k | 2.6%   | 55     | 1.83 ms|
-| T=10, B=10-15, N=32 K=2 (×3 trials, median) | **847k** | 0% | 38 | 2.9 ms |
-| T=8,  B=8-15, N=1 K=1 (latency floor) | 202k | 0% | 547 | 1.92 ms |
+| config                                      | pps      | drop % | min µs | p50     |
+| ------------------------------------------- | -------- | ------ | ------ | ------- |
+| T=8, B=8-15, N=4 K=4                        | 598k     | 2.6%   | 55     | 1.83 ms |
+| T=10, B=10-15, N=32 K=2 (×3 trials, median) | **847k** | 0%     | 38     | 2.9 ms  |
+| T=8, B=8-15, N=1 K=1 (latency floor)        | 202k     | 0%     | 547    | 1.92 ms |
 
 Throughput jumped from 343k → 847k (~2.5×). That alone tells us "SQPOLL
 contention" wasn't the main problem before — worker migration was. SQPOLL
@@ -88,12 +88,12 @@ while (1) {
 One syscall per drain cycle instead of zero. Cost is one `io_uring_enter` per
 batch of ~hundreds of packets — invisible.
 
-| config                          | pps  | drop % | min µs | p50    |
-| ------------------------------- | ---- | ------ | ------ | ------ |
-| T=8,  B=8-15, N=4 K=4 (smoke)   | 572k | 0%     | 9.1    | 18.1 µs |
-| T=10, B=10-15, N=32 K=2 (×3, median) | **893k** | 0% | 8.7 | 2.7 ms |
-| T=8,  B=8-15, N=1 K=1 (latency floor) | 168k | 0% | 7.1 | 16.5 µs |
-| T=8,  B=8-15, N=48 K=1 (capacity ceiling) | 977k | 21% | 11 | 24 ms |
+| config                                   | pps      | drop % | min µs | p50     |
+| ---------------------------------------- | -------- | ------ | ------ | ------- |
+| T=8, B=8-15, N=4 K=4 (smoke)             | 572k     | 0%     | 9.1    | 18.1 µs |
+| T=10, B=10-15, N=32 K=2 (×3, median)     | **893k** | 0%     | 8.7    | 2.7 ms  |
+| T=8, B=8-15, N=1 K=1 (latency floor)     | 168k     | 0%     | 7.1    | 16.5 µs |
+| T=8, B=8-15, N=48 K=1 (capacity ceiling) | 977k     | 21%    | 11     | 24 ms   |
 
 Latency floor collapses from 547 µs → **7.1 µs** at N=1 K=1, matching v4. Sustained throughput stays at the Phase-1-with-SQPOLL level (893k vs 847k median), and capacity ceiling at N=48 K=1 is essentially unchanged from Phase 1's high-N runs.
 
@@ -113,10 +113,10 @@ can drive.
 
 ### A. Sustained throughput (T=10 cpuset 0-9, B=10-15, N=32 K=2)
 
-| ver | pps median | trial spread | drop % | min µs | p50    | p99    |
-| --- | ---------- | ------------ | ------ | ------ | ------ | ------ |
-| v4  | 535k       | 523–542k     | 0%     | 9.4    | 2.2 ms | 15 ms  |
-| v5  | **893k**   | 875–893k     | 0–1%   | 8.7    | 2.7 ms | 16 ms  |
+| ver | pps median | trial spread | drop % | min µs | p50    | p99   |
+| --- | ---------- | ------------ | ------ | ------ | ------ | ----- |
+| v4  | 535k       | 523–542k     | 0%     | 9.4    | 2.2 ms | 15 ms |
+| v5  | **893k**   | 875–893k     | 0–1%   | 8.7    | 2.7 ms | 16 ms |
 
 v5 delivers **1.67× the sustained throughput** at the same offered load. p50
 goes up modestly because the server is processing more packets and there's
@@ -137,10 +137,10 @@ touches.
 
 ### C. Capacity ceiling (T=8 cpuset 0-7, B=8-15, N=48 K=1)
 
-| ver | pps median | drop % | p50    |
-| --- | ---------- | ------ | ------ |
-| v4  | ~849k      | 8%     | 10 ms  |
-| v5  | 977k       | 21%    | 24 ms  |
+| ver | pps median | drop % | p50   |
+| --- | ---------- | ------ | ----- |
+| v4  | ~849k      | 8%     | 10 ms |
+| v5  | 977k       | 21%    | 24 ms |
 
 Mixed read. v5 delivers more echo'd packets per second but at a higher drop
 %, suggesting it's accepting more load into its rings and then losing some
@@ -188,6 +188,7 @@ Three reasons SQPOLL hurts at this scale on this hardware:
   fixes the worst of this, but the polling overhead remains.
 
 SQPOLL pays off when:
+
 - The workload is sustained at very high pps so the poller stays hot.
 - One submit per packet (or per very small batch) — i.e. when avoiding the
   syscall really matters.
@@ -235,8 +236,8 @@ VERSION=v5_iou_mt docker compose down
 - **v5's wins are at high pps.** At low load (N=1 K=1), v4 and v5 are
   indistinguishable. The architecture only pays off when there are many
   packets in flight.
-- **Bench is the limiter in some configs.** Sustained 893k is what *this
-  bench on this host* can offer at 0% drop. Server probably has more
+- **Bench is the limiter in some configs.** Sustained 893k is what _this
+  bench on this host_ can offer at 0% drop. Server probably has more
   headroom — visible only when offered load exceeds bench's clean ceiling
   (config C). The two-machine setup (also required for v6) is the next
   honest step.
