@@ -56,10 +56,10 @@ workers pinned to a `cpuset`). The only variable is whether
 
 One packet in flight at a time — measures pure service time.
 
-| variant     | pps  | min µs  | p50 µs  | p99    |
-| ----------- | ---- | ------- | ------- | ------ |
-| SQPOLL on   | 202k | **547** | 1920    | ~3 ms  |
-| SQPOLL off  | 168k | **7.1** | **16.5**| 35 µs  |
+| variant    | pps  | min µs  | p50 µs   | p99   |
+| ---------- | ---- | ------- | -------- | ----- |
+| SQPOLL on  | 202k | **547** | 1920     | ~3 ms |
+| SQPOLL off | 168k | **7.1** | **16.5** | 35 µs |
 
 **SQPOLL injects ~540 µs into the single-flight round trip.** That's not a
 measurement artifact; it's the polling delay made visible. The poller wakes
@@ -69,10 +69,10 @@ on its own clock, not on yours.
 
 Many flows in flight, server kept busy.
 
-| variant     | pps median | drop % | min µs | p50    |
-| ----------- | ---------- | ------ | ------ | ------ |
-| SQPOLL on   | 847k       | 0%     | 38     | 2.9 ms |
-| SQPOLL off  | **893k**   | 0–1%   | 8.7    | 2.7 ms |
+| variant    | pps median | drop % | min µs | p50    |
+| ---------- | ---------- | ------ | ------ | ------ |
+| SQPOLL on  | 847k       | 0%     | 38     | 2.9 ms |
+| SQPOLL off | **893k**   | 0–1%   | 8.7    | 2.7 ms |
 
 The "zero-syscall submit" advantage doesn't show up. SQPOLL is +0%
 throughput — actually slightly _worse_ than dropping it — and worse on
@@ -83,10 +83,10 @@ every latency stat.
 Offered load above the bench's clean ceiling — measures what the server can
 absorb before drops compound.
 
-| variant     | pps median | drop % | p50   |
-| ----------- | ---------- | ------ | ----- |
-| SQPOLL on   | ~950k      | 22%    | 26 ms |
-| SQPOLL off  | 977k       | 21%    | 24 ms |
+| variant    | pps median | drop % | p50   |
+| ---------- | ---------- | ------ | ----- |
+| SQPOLL on  | ~950k      | 22%    | 26 ms |
+| SQPOLL off | 977k       | 21%    | 24 ms |
 
 Essentially the same. Capacity at saturation is set by the kernel UDP stack,
 not by submit overhead.
@@ -188,7 +188,7 @@ params.sq_thread_idle = 2000;
 [`RESULT.md`](./RESULT.md). The numbers above were taken with this exact
 diff plus pinned workers, so the comparison isolates SQPOLL.
 
-> ⚠️  If you try SQPOLL without `IPC_LOCK` capability and `memlock=unlimited`
+> ⚠️ If you try SQPOLL without `IPC_LOCK` capability and `memlock=unlimited`
 > the ring init will fail at `io_uring_queue_init_params` with ENOMEM —
 > the poller pins memory at registration. The `compose.yaml` in this repo
 > already sets both.

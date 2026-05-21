@@ -62,7 +62,7 @@ io_uring isn't one ring — it's three, each with a different producer/consumer 
    buf_ring (provided) app          kernel        free buffers (recv pool)
 ```
 
-You write SQEs, the kernel writes CQEs, and the buf_ring is a _separate_ ring of free recv buffers the kernel pulls from when a packet arrives. The buf_ring is what makes multishot worth it: the kernel doesn't need an SQE per recv, it just grabs a free buffer.
+You write SQEs, the kernel writes CQEs, and the buf*ring is a \_separate* ring of free recv buffers the kernel pulls from when a packet arrives. The buf_ring is what makes multishot worth it: the kernel doesn't need an SQE per recv, it just grabs a free buffer.
 
 ## 3. What setup costs (per thread)
 

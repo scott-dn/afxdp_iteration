@@ -4,12 +4,12 @@
 
 v5 beats v4 on sustained throughput and ties on latency floor:
 
-| metric                        | v4 mmsg_mt | v5 iou_mt  | delta               |
-| ----------------------------- | ---------- | ---------- | ------------------- |
-| sustained throughput, 0% drop | ~535k pps  | ~893k pps  | **+67%**            |
-| capacity ceiling (drops OK)   | ~870k pps  | ~977k pps  | +12%                |
-| latency floor (min)           | 6.1 µs     | 7.1 µs     | ~tie (within noise) |
-| latency floor (p50)           | 13.7 µs    | 16.5 µs    | ~tie                |
+| metric                        | v4 mmsg_mt | v5 iou_mt | delta               |
+| ----------------------------- | ---------- | --------- | ------------------- |
+| sustained throughput, 0% drop | ~535k pps  | ~893k pps | **+67%**            |
+| capacity ceiling (drops OK)   | ~870k pps  | ~977k pps | +12%                |
+| latency floor (min)           | 6.1 µs     | 7.1 µs    | ~tie (within noise) |
+| latency floor (p50)           | 13.7 µs    | 16.5 µs   | ~tie                |
 
 The win comes from `io_uring`'s multishot recv + provided buffer ring
 eliminating per-packet SQE bookkeeping. The latency tie comes from picking
