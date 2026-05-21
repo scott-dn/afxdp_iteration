@@ -46,11 +46,6 @@
  * multiple groups would matter only if we had multiple buffer sizes. */
 #define BUF_GROUP 0
 
-/* SQPOLL idle timeout (ms). The kernel poller parks itself after this much idle time;
- * the next SQE submission costs an io_uring_enter wakeup. 2 s keeps the poller hot
- * across short lulls without burning a core forever when the server is truly idle. */
-#define SQPOLL_IDLE_MS 2000
-
 typedef struct thread_arg_t {
     int tid;
     int port;
@@ -129,23 +124,13 @@ static void *worker_thread(void *arg) {
     }
 
     /* io_uring init. The params struct is bidirectional:
-     *   in  → flags, sq_thread_idle, sq_thread_cpu (we set), ...
+     *   in  → flags, ...
      *   out ← sq_entries, cq_entries, features, *_off (kernel fills on return)
-     * Zero-init is required: reserved fields must be 0 or the kernel rejects the call. */
+     * Zero-init is required: reserved fields must be 0 or the kernel rejects the call.
+     * No flags here — drain-loop submits one io_uring_enter per cycle, amortized
+     * across the batch. See why_not_sqpoll.md for why the poller variant lost. */
     struct io_uring        ring;
     struct io_uring_params params = {0};
-
-    /* SQPOLL intentionally NOT enabled here. Tradeoff is workload-dependent:
-     *   - SQPOLL on:  zero-syscall submits while the kthread is hot; great for
-     *                 sustained high pps, but adds ~25 µs to single-flight
-     *                 latency because submits compete with the poller's spin,
-     *                 and a cold poller costs one io_uring_enter to wake.
-     *   - SQPOLL off: one io_uring_enter per CQ-drain cycle (cheap — amortized
-     *                 across the batch of CQEs we drain in one wait_cqe).
-     *                 Latency floor matches v4/v3; throughput cost is small
-     *                 (one syscall per ~hundreds of packets in the batch).
-     * v5's distinctive wins (multishot recv, provided buffer ring, no per-packet
-     * SQE bookkeeping) remain regardless of SQPOLL. See RESULT.md for the data. */
 
     /* RING_ENTRIES is a *request*: the kernel rounds up to a power of two and may
      * clamp by IORING_MAX_ENTRIES. The actual sizes land in params.sq_entries
@@ -158,9 +143,9 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
 
-    /* One-time inspection: print what the kernel actually gave us back. Useful for
-     * confirming SQPOLL is supported on this kernel, the ring sizes after rounding,
-     * and which feature flags this kernel exposes. Only thread 0 prints. */
+    /* One-time inspection: print what the kernel actually gave us back. Confirms ring
+     * sizes after rounding and which feature flags this kernel exposes. Only thread 0
+     * prints. */
     if (tid == 0) {
         printf("io_uring: liburing %d.%d  sq=%u  cq=%u  features=0x%x%s%s%s\n", io_uring_major_version(),
                io_uring_minor_version(), params.sq_entries, params.cq_entries, params.features,
@@ -223,16 +208,15 @@ static void *worker_thread(void *arg) {
     }
     io_uring_submit(&ring);
 
-    printf("thread %d: listening on UDP port %d (io_uring SQPOLL, multishot recvmsg, "
-           "buf_ring=%d, sqpoll_idle=%dms)\n",
-           tid, port, BUF_RING_ENTRIES, SQPOLL_IDLE_MS);
+    printf("thread %d: listening on UDP port %d (io_uring, multishot recvmsg, buf_ring=%d)\n", tid, port,
+           BUF_RING_ENTRIES);
 
     uint64_t pkg_cnt = 0;
 
     while (1) {
         struct io_uring_cqe *cqe;
-        /* Block until at least one CQE is available. With SQPOLL this is the only place
-         * we may transition into the kernel — and only when the CQ is empty. */
+        /* Block until at least one CQE is available. Enters the kernel only when the CQ
+         * is empty; if completions are already queued this is a pure memory read. */
         int wret = io_uring_wait_cqe(&ring, &cqe);
         if (wret < 0) {
             if (wret == -EINTR) continue;
@@ -316,8 +300,8 @@ static void *worker_thread(void *arg) {
         }
         io_uring_cq_advance(&ring, drained);
 
-        /* Push any send SQEs we built this iteration. With SQPOLL the kernel poller
-         * picks them up; submit only enters the kernel if the poller is parked. */
+        /* Push any send SQEs we built this iteration. One io_uring_enter per drain
+         * cycle, amortized across however many CQEs we just processed. */
         io_uring_submit(&ring);
 
         if (pkg_cnt / 50000 > prev_milestone)

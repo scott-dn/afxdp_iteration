@@ -2,7 +2,7 @@
 
 UDP echo server that replaces v4's `epoll` + `recvmmsg`/`sendmmsg` with a per-thread `io_uring` ring using **multishot `recvmsg`** (one SQE produces many recv completions) and **provided buffer rings** (kernel pulls recv buffers from a pool the app registers). The hot path does one `io_uring_enter` per CQ-drain cycle and zero per-packet SQE bookkeeping for recv.
 
-> **Note on `SQPOLL`:** the kernel-side submission poller was tried (`IORING_SETUP_SQPOLL`) and found to be a net loss on this workload — see `RESULT.md`. Lower latency at single-flight, no measurable throughput penalty at high pps, fewer moving parts. Section 9 below contrasts the two modes.
+> The kernel-side submission poller (`IORING_SETUP_SQPOLL`) was tried and dropped — see [`why_not_sqpoll.md`](./why_not_sqpoll.md) for the measured tradeoff.
 
 ## Requirements
 
@@ -34,19 +34,17 @@ UDP echo server that replaces v4's `epoll` + `recvmmsg`/`sendmmsg` with a per-th
    │   ┌─────────────┐      │                      │   ┌─────────────┐      │
    │   │  io_uring   │      │                      │   │  io_uring   │      │
    │   │             │      │                      │   │             │      │
-   │   │  SQ ring  ◄─┼──┐   │                      │   │  SQ ring  ◄─┼──┐   │
-   │   │  CQ ring  ──┼──┼─► │                      │   │  CQ ring  ──┼──┼─► │
-   │   │  buf_ring   │  │   │                      │   │  buf_ring   │  │   │
-   │   └──────┬──────┘  │   │                      │   └──────┬──────┘  │   │
-   │          │         │   │                      │          │         │   │
-   │   ┌──────┴──────┐  │   │                      │   ┌──────┴──────┐  │   │
-   │   │ buf_base[]  │  │   │                      │   │ buf_base[]  │  │   │
-   │   │ 1024×2048 B │  │   │                      │   │ 1024×2048 B │  │   │
-   │   │ (mmap'd)    │  │   │                      │   │ (mmap'd)    │  │   │
-   │   └─────────────┘  │   │                      │   └─────────────┘  │   │
-   │                    │   │                      │                    │   │
-   │       SQPOLL  ─────┘   │                      │       SQPOLL  ─────┘   │
-   │       kthread (kernel) │                      │       kthread (kernel) │
+   │   │  SQ ring    │      │                      │   │  SQ ring    │      │
+   │   │  CQ ring    │      │                      │   │  CQ ring    │      │
+   │   │  buf_ring   │      │                      │   │  buf_ring   │      │
+   │   └──────┬──────┘      │                      │   └──────┬──────┘      │
+   │          │             │                      │          │             │
+   │   ┌──────┴──────┐      │                      │   ┌──────┴──────┐      │
+   │   │ buf_base[]  │      │                      │   │ buf_base[]  │      │
+   │   │ 1024×2048 B │      │                      │   │ 1024×2048 B │      │
+   │   │ (mmap'd)    │      │                      │   │ (mmap'd)    │      │
+   │   └─────────────┘      │                      │   └─────────────┘      │
+   │                        │                      │                        │
    └────────────────────────┘                      └────────────────────────┘
 ```
 
@@ -73,9 +71,7 @@ You write SQEs, the kernel writes CQEs, and the buf_ring is a _separate_ ring of
   setsockopt SO_REUSEADDR / SO_REUSEPORT / SO_RCVBUF=8MB
   bind :9000
 
-  io_uring_queue_init_params(RING_ENTRIES=4096,           ── creates SQ/CQ
-                             SETUP_SQPOLL,                   spawns SQPOLL kthread
-                             sq_thread_idle=2000ms)
+  io_uring_queue_init_params(RING_ENTRIES=4096, flags=0)  ── creates SQ/CQ
 
   mmap(1024 × 2048 B, PRIVATE|ANON|POPULATE)              ── recv buffer pool
                                                              (~2 MB per thread)
@@ -148,14 +144,15 @@ Critical detail: **these pointers are valid only until you recycle the bid.** Th
   ┌──────────────── time ────────────────►
 
   T0   userspace blocks in io_uring_wait_cqe()
+       (CQ empty → io_uring_enter, kernel parks the thread)
 
   T1   packet arrives at NIC → kernel UDP → SO_REUSEPORT → thread N's socket
-       │
-       │   SQPOLL kthread (already polling) sees a multishot recv ready
-       │   pulls bid=37 from buf_ring head
-       │   writes packet into buf_base[37 * 2048]
-       │   posts CQE: { user_data=0, res=1472, flags=F_MORE|F_BUFFER|(37<<16) }
-       │
+       kernel's multishot recv handler:
+            pulls bid=37 from buf_ring head
+            writes packet into buf_base[37 * 2048]
+            posts CQE: { user_data=0, res=1472, flags=F_MORE|F_BUFFER|(37<<16) }
+            wakes the blocked thread
+
   T2   wait_cqe returns → app drains CQ:
             ud=0 (UD_RECV), bid=37, res=1472 ✓
             o = recvmsg_validate(buf+37, 1472, &proto)
@@ -172,10 +169,9 @@ Critical detail: **these pointers are valid only until you recycle the bid.** Th
 
        (after for_each_cqe loop)
        io_uring_cq_advance(drained)
-       io_uring_submit()    ── tail bump; SQPOLL picks it up without syscall
+       io_uring_submit()    ── io_uring_enter; kernel runs queued SQEs
 
-  T3   SQPOLL kthread sees new SQE in SQ
-       executes sendmsg(fd, &send_msgs[37], 0)
+  T3   kernel executes sendmsg(fd, &send_msgs[37], 0)
        reads name + payload directly from slot 37  ← still owned by us
        writes CQE: { user_data=38, res=1472 }     ── 38 = UD_SEND_BASE + 37
 
@@ -190,7 +186,7 @@ Critical detail: **these pointers are valid only until you recycle the bid.** Th
 **Two key invariants:**
 
 1. **Slot 37 is borrowed from the kernel between T2 and T4.** The kernel must not overwrite it. That's enforced by _not putting bid 37 back in buf_ring until T4_.
-2. **Userspace never makes a syscall on this path** — provided SQPOLL is hot. `wait_cqe` is just a memory read when CQEs are already available; it only enters the kernel when the CQ is empty.
+2. **One `io_uring_enter` per drain cycle.** `wait_cqe` is a memory read when CQEs are already available and only enters the kernel when the CQ is empty; `submit` enters once at the end of the cycle regardless of how many SQEs it covers.
 
 ## 7. user_data — tagging completions without a side table
 
@@ -250,7 +246,7 @@ v4 hot loop:
   → 3 syscalls per drain cycle (one drain per ~64 packets)
 
 
-v5 hot loop (no SQPOLL, what we ship):
+v5 hot loop:
   while (1) {
       wait_cqe()                    ── io_uring_enter only when CQ is empty
       for each cqe:
@@ -268,34 +264,9 @@ means there's no per-packet SQE bookkeeping. Submit cost is one
 `io_uring_enter` amortized across everything we did this cycle, which is
 invisible in the profile.
 
-### Why not SQPOLL?
-
-`IORING_SETUP_SQPOLL` would push the syscall count to zero — the kernel
-poller thread services submits directly without `io_uring_enter`. But:
-
-- It adds 25 µs–2 ms to single-flight latency. The poller spins on the SQ
-  tail and only services submits on its next round; with one in-flight
-  packet, that delay dominates the round trip.
-- It burns one full CPU per ring while spinning. At T=8 that's 8 cores
-  worth of polling competing with worker threads on the same cpuset.
-- It cold-starts on burst boundaries: after `sq_thread_idle` ms of
-  inactivity, the kthread parks; the next submit costs one syscall to
-  wake it.
-
-For this UDP echo workload, the drain-the-CQ loop already amortizes
-submits across many CQEs, so the one `io_uring_enter` per cycle is cheap.
-SQPOLL would save it but cost much more in latency. See `RESULT.md` for
-the measured tradeoff (892k pps at 0% drop without SQPOLL, ~847k pps at
-0% drop with SQPOLL, but latency floor 7 µs vs 547 µs).
-
-SQPOLL would pay off when:
-
-- Submits cannot batch (one syscall per packet would actually fire).
-- Single-flight latency doesn't matter (sustained one-way streaming).
-- A dedicated CPU can be reserved for the poller via
-  `SQ_AFF + sq_thread_cpu`.
-
-None of those are true here, so SQPOLL stays off in v5.
+> The `IORING_SETUP_SQPOLL` variant — a kernel poller that would drop the
+> submit syscall to zero — was tried and dropped. See
+> [`why_not_sqpoll.md`](./why_not_sqpoll.md) for the numbers.
 
 ## 10. Why the syscall delta isn't the whole story
 

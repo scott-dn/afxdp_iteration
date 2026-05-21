@@ -12,12 +12,10 @@ services:
     # Linux capabilities granted to the container (drops everything else by default).
     # Needed by v5/v6 only; v1-v4 don't use them but the same image runs all versions.
     #   NET_ADMIN — change net.core.rmem_max sysctl, manage XDP programs, ip link xdp ...
-    #   SYS_ADMIN — required by io_uring's IORING_SETUP_SQPOLL on some kernels (perf event paranoid)
-    #               and to mlock() large rings without a per-process limit.
-    #   IPC_LOCK  — allow mlock() of UMEM pages (v6/AF_XDP) without RLIMIT_MEMLOCK truncation.
+    #   IPC_LOCK  — allow mlock() of io_uring rings (v5) and UMEM pages (v6/AF_XDP)
+    #               without RLIMIT_MEMLOCK truncation.
     cap_add:
       - NET_ADMIN
-      - SYS_ADMIN
       - IPC_LOCK
     # Lift the locked-memory cap to unlimited. io_uring rings (v5) and AF_XDP UMEM (v6)
     # both mlock significant memory; the default RLIMIT_MEMLOCK (64 KiB on most distros)
