@@ -177,11 +177,11 @@ int main(int argc, char *argv[]) {
     }
 
     const char *host = argv[1];
-    int         port = atoi(argv[2]);
-    int         dur  = (argc > 3) ? atoi(argv[3]) : 5;
-    g_psize          = (argc > 4) ? (size_t)atoi(argv[4]) : 64;
-    int num_senders  = (argc > 5) ? atoi(argv[5]) : 4;
-    int k            = (argc > 6) ? atoi(argv[6]) : 1;
+    int         port = parse_int_or(argv[2], 0);
+    int         dur  = (argc > 3) ? parse_int_or(argv[3], 5) : 5;
+    g_psize          = (argc > 4) ? (size_t)parse_int_or(argv[4], 64) : 64;
+    int num_senders  = (argc > 5) ? parse_int_or(argv[5], 4) : 4;
+    int k            = (argc > 6) ? parse_int_or(argv[6], 1) : 1;
 
     if (g_psize < PKT_HDR) g_psize = PKT_HDR;
     if (g_psize > MAX_PKG_SIZE) g_psize = MAX_PKG_SIZE;
@@ -215,6 +215,7 @@ int main(int argc, char *argv[]) {
         all_fds[i] = socket(AF_INET, SOCK_DGRAM, 0);
         if (all_fds[i] < 0) {
             perror("socket");
+            free(all_fds);
             return 1;
         }
         setsockopt(all_fds[i], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -224,6 +225,7 @@ int main(int argc, char *argv[]) {
     g_latencies = malloc(MAX_SAMPLES * sizeof(uint64_t));
     if (!g_latencies) {
         perror("malloc");
+        free(all_fds);
         return 1;
     }
 
@@ -236,7 +238,7 @@ int main(int argc, char *argv[]) {
     for (int s = 0; s < num_senders; s++) {
         senders[s].sender_id = s;
         senders[s].k         = k;
-        senders[s].fds       = &all_fds[s * k];
+        senders[s].fds       = &all_fds[(ptrdiff_t)s * k];
     }
     for (int r = 0; r < num_sockets; r++) {
         receivers[r].recv_id = r;

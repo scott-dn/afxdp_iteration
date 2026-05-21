@@ -2,13 +2,29 @@
 #define UTILS_H
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* Parse a base-10 int from str. Returns parsed value on success, fallback on
+ * any failure (NULL, empty, non-numeric trailing chars, out-of-int-range).
+ * Replaces atoi() — atoi silently returns 0 for "abc" and ignores overflow,
+ * which clang-tidy flags as bugprone-unchecked-string-to-number-conversion. */
+static inline int parse_int_or(const char *str, int fallback) {
+    if (str == NULL || *str == '\0') return fallback;
+    errno         = 0;
+    char *end     = NULL;
+    long  v       = strtol(str, &end, 10);
+    if (errno != 0 || end == str || *end != '\0') return fallback;
+    if (v < INT_MIN || v > INT_MAX) return fallback;
+    return (int)v;
+}
 
 /* Returns current time in nanoseconds from CLOCK_MONOTONIC.
  * CLOCK_MONOTONIC: always increases, unaffected by wall clock changes (NTP, DST, etc.)

@@ -173,8 +173,8 @@ done:
 }
 
 int main(int argc, char *argv[]) {
-    int port        = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
-    int num_threads = (argc > 2) ? atoi(argv[2]) : DEFAULT_THREADS;
+    int port        = (argc > 1) ? parse_int_or(argv[1], DEFAULT_PORT) : DEFAULT_PORT;
+    int num_threads = (argc > 2) ? parse_int_or(argv[2], DEFAULT_THREADS) : DEFAULT_THREADS;
 
     if (num_threads < 1 || num_threads > 256) {
         fprintf(stderr, "num_threads must be 1..256\n");

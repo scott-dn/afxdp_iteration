@@ -14,7 +14,7 @@
 #define DEFAULT_PORT 9000
 
 int main(int argc, char *argv[]) {
-    int port = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
+    int port = (argc > 1) ? parse_int_or(argv[1], DEFAULT_PORT) : DEFAULT_PORT;
 
     /* Pin this single-threaded server to one CPU. With cpuset (docker/taskset)
      * present, that's the first allowed CPU. Without, it falls to cpu 0. The

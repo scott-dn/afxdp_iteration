@@ -241,7 +241,7 @@ static void *worker_thread(void *arg) {
                 int rearm = !(flg & IORING_CQE_F_MORE);
 
                 if (flg & IORING_CQE_F_BUFFER) {
-                    int            bid = flg >> IORING_CQE_BUFFER_SHIFT;
+                    int            bid = (int)(flg >> IORING_CQE_BUFFER_SHIFT);
                     unsigned char *buf = buf_slot(buf_base, bid);
 
                     if (res < 0) {
@@ -321,8 +321,8 @@ int main(int argc, char *argv[]) {
      * until the buffer fills (often: never, on a steady-state server). */
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    int port        = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
-    int num_threads = (argc > 2) ? atoi(argv[2]) : DEFAULT_THREADS;
+    int port        = (argc > 1) ? parse_int_or(argv[1], DEFAULT_PORT) : DEFAULT_PORT;
+    int num_threads = (argc > 2) ? parse_int_or(argv[2], DEFAULT_THREADS) : DEFAULT_THREADS;
 
     if (num_threads < 1 || num_threads > 256) {
         fprintf(stderr, "num_threads must be 1..256\n");
